@@ -55,6 +55,71 @@ from uab_app.parsers import extract_document_text
 from uab_app.prompts import build_infographic_prompt
 from uab_app.sanitize import injection_labels_for_ids, regex_cleanup_fallback, sanitize_input
 from uab_app.styles import STYLES
+
+
+def _data_series_has_meaningful_numbers(series: list[dict[str, Any]]) -> bool:
+    """True if extracted/manual rows likely contain chart numbers for prompt use."""
+    if not series:
+        return False
+    numeric_keys = (
+        "median",
+        "mean",
+        "value",
+        "range_low",
+        "range_high",
+        "point_estimate",
+        "lower_ci",
+        "upper_ci",
+        "n",
+    )
+    for row in series:
+        if not isinstance(row, dict):
+            continue
+        for k in numeric_keys:
+            v = row.get(k)
+            if v is None or v == "":
+                continue
+            try:
+                float(str(v).replace(",", ""))
+                return True
+            except (TypeError, ValueError):
+                pass
+        if str(row.get("value", "")).strip() or str(row.get("group", "")).strip():
+            return True
+    return False
+
+
+def chart_figure_pending_extraction(chart: dict[str, Any]) -> bool:
+    """Uploaded figure image with no usable numeric table yet — needs vision extraction."""
+    if chart.get("verification_status") == "removed":
+        return False
+    if not chart.get("_bytes_b64"):
+        return False
+    return not _data_series_has_meaningful_numbers(chart.get("data_series") or [])
+
+
+def run_chart_figure_vision_extract(
+    chart: dict[str, Any],
+    client: Any,
+    cross_text: str,
+    snippet_txt: str,
+    vision_model: str,
+    doc_cross_check: bool,
+) -> None:
+    raw_b = base64.b64decode(chart["_bytes_b64"])
+    mime = chart.get("_mime") or "image/png"
+    extra = snippet_txt[:8000] if snippet_txt.strip() else cross_text[:8000]
+    raw_j = gpt4o_extract_chart_from_image(
+        client, raw_b, mime, vision_model, extra
+    )
+    cd = chart_dict_to_dataclass(chart)
+    merge_extraction_into_chart(raw_j, cd)
+    chart.update(cd.to_dict())
+    chart["_bytes_b64"] = chart.get("_bytes_b64")
+    chart["_mime"] = chart.get("_mime")
+    refresh_chart_reference_hints(chart, cross_text, doc_cross_check)
+
+
 # ─── Session init ───────────────────────────────────────────────
 def init_session_state() -> None:
     if "session_id" not in st.session_state:
@@ -619,13 +684,67 @@ def main() -> None:
             st.rerun()
 
     st.markdown("#### Reference entries")
+
+    _flash_n = st.session_state.pop("_extract_all_ok", None)
+    if _flash_n:
+        st.success(f"Vision extraction completed for {_flash_n} figure(s).")
+
+    pending_fig = [
+        c
+        for c in st.session_state.charts
+        if chart_figure_pending_extraction(c)
+    ]
+    if pending_fig:
+        st.warning(
+            f"**{len(pending_fig)} uploaded figure(s) need vision extraction** "
+            "before numeric values are included in the prompt (expanders below are opened for those)."
+        )
+        ec1, ec2 = st.columns([2, 1])
+        with ec1:
+            if st.button(
+                "🔍 Run vision extraction on all pending figures",
+                type="primary",
+                use_container_width=True,
+                key="btn_extract_all_pending_figures",
+            ):
+                ok_e, err_e, client_e, _im, _cm = get_credentials()
+                if not ok_e or client_e is None:
+                    st.error(err_e or "Configure API keys.")
+                else:
+                    errs: list[str] = []
+                    vm = get_vision_model_name()
+                    with st.spinner(f"Running vision on {len(pending_fig)} figure(s)…"):
+                        for c in pending_fig:
+                            try:
+                                run_chart_figure_vision_extract(
+                                    c,
+                                    client_e,
+                                    cross_text,
+                                    snippet_txt,
+                                    vm,
+                                    _cc,
+                                )
+                                st.session_state.chart_extraction_nonce += 1
+                            except Exception as ex:
+                                ttl = str(c.get("title") or c.get("chart_id") or "untitled")
+                                errs.append(f"{ttl}: {user_friendly_error(ex)}")
+                    if errs:
+                        st.error("Some extractions failed:\n\n" + "\n".join(errs))
+                    else:
+                        st.session_state["_extract_all_ok"] = len(pending_fig)
+                    st.rerun()
+        with ec2:
+            st.caption("One vision API call per figure.")
+
     for idx, chart in enumerate(list(st.session_state.charts)):
         cid = chart.get("chart_id", f"idx_{idx}")
         removed = chart.get("verification_status") == "removed"
         badge = "removed from prompt" if removed else "included in prompt"
+        pending_px = chart_figure_pending_extraction(chart)
+        ex_tag = " — needs vision extraction" if (pending_px and not removed) else ""
         with st.expander(
-            f"Reference {idx + 1}: {chart.get('title') or cid} — {badge}",
-            expanded=False,
+            f"Reference {idx + 1}: {chart.get('title') or cid} — {badge}{ex_tag}",
+            expanded=(pending_px and not removed),
         ):
             if removed:
                 st.caption("Excluded from the generation prompt.")
@@ -678,34 +797,29 @@ def main() -> None:
                 chart["footnotes"] = [ln for ln in nfoot.splitlines() if ln.strip()]
 
                 if chart.get("_bytes_b64"):
-                    st.caption("Publication figure — run extraction to pull numbers into the table.")
-                    ex_col = st.columns([1, 2])[0]
-                    with ex_col:
-                        if st.button("Run vision extraction", key=f"ex_{cid}"):
-                            ok_e, err_e, client_e, _im, _cm = get_credentials()
-                            if not ok_e or client_e is None:
-                                st.error(err_e or "API not configured.")
-                            else:
-                                try:
-                                    raw_b = base64.b64decode(chart["_bytes_b64"])
-                                    mime = chart.get("_mime") or "image/png"
-                                    extra = cross_text[:8000]
-                                    if snippet_txt:
-                                        extra = snippet_txt[:8000]
-                                    raw_j = gpt4o_extract_chart_from_image(
-                                        client_e, raw_b, mime, get_vision_model_name(), extra
-                                    )
-                                    cd = chart_dict_to_dataclass(chart)
-                                    merge_extraction_into_chart(raw_j, cd)
-                                    chart.update(cd.to_dict())
-                                    chart["_bytes_b64"] = chart.get("_bytes_b64")
-                                    chart["_mime"] = chart.get("_mime")
-                                    refresh_chart_reference_hints(chart, cross_text, _cc)
-                                    st.session_state.chart_extraction_nonce += 1
-                                    st.success("Extraction complete — values are sent with the next generation.")
-                                    st.rerun()
-                                except Exception as ex:
-                                    st.error(user_friendly_error(ex))
+                    st.caption(
+                        "Publication figure — run vision extraction to pull numbers into the table, "
+                        "or use the primary “Run vision extraction on all pending figures” button above."
+                    )
+                    if st.button("Run vision extraction (this figure only)", key=f"ex_{cid}"):
+                        ok_e, err_e, client_e, _im, _cm = get_credentials()
+                        if not ok_e or client_e is None:
+                            st.error(err_e or "API not configured.")
+                        else:
+                            try:
+                                run_chart_figure_vision_extract(
+                                    chart,
+                                    client_e,
+                                    cross_text,
+                                    snippet_txt,
+                                    get_vision_model_name(),
+                                    _cc,
+                                )
+                                st.session_state.chart_extraction_nonce += 1
+                                st.success("Extraction complete — values are sent with the next generation.")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(user_friendly_error(ex))
 
                 warns = chart.get("extraction_warnings") or []
                 lowc = chart.get("low_confidence_fields") or []
