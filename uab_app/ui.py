@@ -1,0 +1,1155 @@
+"""Streamlit UI for UAB Medicine Infographic Generator."""
+
+from __future__ import annotations
+
+import base64
+import copy
+import os
+import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Optional
+
+import pandas as pd
+import streamlit as st
+
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
+from uab_app.audit import audit_log, log_chart_audit_trail
+from uab_app.charts import (
+    chart_dict_to_dataclass,
+    chart_gate_blocks_generation,
+    format_verified_charts_for_prompt,
+    gpt4o_extract_chart_from_image,
+    merge_extraction_into_chart,
+    new_chart_id,
+    parse_csv_to_data_series,
+    parse_json_data_file,
+    parse_xlsx_to_data_series,
+    recompute_chart_status_after_change,
+    run_post_generation_chart_qa,
+)
+from uab_app.cleanup import cache_key_for_raw, clean_document_text_llm
+from uab_app.constants import (
+    ALLOWED_UPLOAD_EXTENSIONS,
+    CHART_MODES,
+    MAX_CHART_UPLOAD_BYTES,
+    MAX_UPLOAD_BYTES,
+    OPENAI_DEFAULT_CHAT_MODEL,
+    OPENAI_DEFAULT_IMAGE_MODEL,
+    OPENAI_DEFAULT_VISION_MODEL,
+)
+from uab_app.image_service import (
+    composite_logo_footer,
+    fetch_image_bytes,
+    generate_with_retry,
+    make_client,
+    resolve_logo_path,
+    user_friendly_error,
+)
+from uab_app.parsers import extract_document_text
+from uab_app.prompts import build_infographic_prompt
+from uab_app.sanitize import injection_labels_for_ids, regex_cleanup_fallback, sanitize_input
+from uab_app.styles import STYLES
+# ─── Session init ───────────────────────────────────────────────
+def init_session_state() -> None:
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+    if "comparison_results" not in st.session_state:
+        st.session_state.comparison_results = []
+    if "last_prompt" not in st.session_state:
+        st.session_state.last_prompt = ""
+    if "last_image_bytes" not in st.session_state:
+        st.session_state.last_image_bytes = None
+    if "generation_history" not in st.session_state:
+        st.session_state.generation_history = []
+    if "refinement_notes" not in st.session_state:
+        st.session_state.refinement_notes = ""
+    if "charts" not in st.session_state:
+        st.session_state.charts = []
+    if "processed_chart_figure_sigs" not in st.session_state:
+        st.session_state.processed_chart_figure_sigs = set()
+    if "processed_data_file_sigs" not in st.session_state:
+        st.session_state.processed_data_file_sigs = set()
+    if "last_verified_charts_block" not in st.session_state:
+        st.session_state.last_verified_charts_block = ""
+    if "chart_extraction_nonce" not in st.session_state:
+        st.session_state.chart_extraction_nonce = 0
+    if "cleaned_docs_cache" not in st.session_state:
+        st.session_state.cleaned_docs_cache = {}
+
+
+def set_progress(
+    progress_bar: Any,
+    status_text: Any,
+    stage: str,
+    frac: float,
+) -> None:
+    progress_bar.progress(min(1.0, max(0.0, frac)))
+    status_text.markdown(
+        "**Progress:** Building prompt → Cleaning document text → Submitting to API "
+        "→ Fetching image → Displaying  \n"
+        f"**Current:** {stage}"
+    )
+
+
+# ─── Main app ───────────────────────────────────────────────────
+def main() -> None:
+    st.set_page_config(
+        page_title="UAB Medicine Infographic Generator",
+        page_icon="🖼️",
+        layout="wide",
+    )
+    init_session_state()
+    session_id = st.session_state.session_id
+
+    st.markdown(
+        "<div style='background:#1A5632;padding:16px 24px;border-radius:8px;margin-bottom:24px'>"
+        "<h1 style='color:white;margin:0;font-family:Source Sans Pro,sans-serif'>"
+        "🖼️ UAB Medicine Infographic Generator</h1>"
+        "<p style='color:#FFC72C;margin:4px 0 0;font-size:14px'>"
+        "GPT Image 2.0 · OpenAI or Azure · UAB Medicine branding"
+        "</p></div>",
+        unsafe_allow_html=True,
+    )
+
+    with st.sidebar:
+        st.markdown("### ⚙️ API Configuration")
+        provider = st.radio(
+            "Provider",
+            options=["openai", "azure"],
+            format_func=lambda p: (
+                "🟢 OpenAI (GPT Image 2)" if p == "openai" else "🔷 Azure OpenAI (GPT Image 2)"
+            ),
+            index=0,
+            horizontal=False,
+            key="sidebar_provider",
+        )
+        st.markdown("---")
+
+        if provider == "openai":
+            with st.expander("🔑 OpenAI", expanded=True):
+                st.text_input(
+                    "API Key",
+                    value=os.environ.get("OPENAI_API_KEY", ""),
+                    key="openai_api_key",
+                    type="password",
+                )
+                st.text_input(
+                    "Chat model (document cleanup)",
+                    value=os.environ.get("OPENAI_CHAT_MODEL", OPENAI_DEFAULT_CHAT_MODEL),
+                    key="openai_chat_model",
+                    help="e.g. gpt-4o-mini",
+                )
+                st.text_input(
+                    "Vision model (chart extraction / QA)",
+                    value=os.environ.get("OPENAI_VISION_MODEL", OPENAI_DEFAULT_VISION_MODEL),
+                    key="openai_vision_model",
+                    help="Use a vision-capable model (e.g. gpt-4o)",
+                )
+                st.text_input(
+                    "Image model (GPT Image)",
+                    value=os.environ.get("OPENAI_IMAGE_MODEL", OPENAI_DEFAULT_IMAGE_MODEL),
+                    key="openai_image_model",
+                    help="Must match an image-capable model available to your API key (e.g. gpt-image-2).",
+                )
+        else:
+            with st.expander("🔷 Azure OpenAI", expanded=True):
+                st.text_input(
+                    "API Key",
+                    value=os.environ.get("AZURE_OPENAI_API_KEY", ""),
+                    key="azure_api_key",
+                    type="password",
+                )
+                st.text_input(
+                    "Endpoint",
+                    value=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+                    key="azure_endpoint",
+                    placeholder="https://your-resource.openai.azure.com",
+                )
+                st.text_input(
+                    "API Version",
+                    value=os.environ.get(
+                        "AZURE_OPENAI_API_VERSION",
+                        "2024-12-01-preview",
+                    ),
+                    key="azure_api_version",
+                )
+                st.text_input(
+                    "Image deployment",
+                    value=os.environ.get("AZURE_OPENAI_IMAGE_MODEL", "gpt-image-2"),
+                    key="azure_image_model",
+                )
+                st.text_input(
+                    "Chat deployment (cleanup)",
+                    value=os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini"),
+                    key="azure_chat_model",
+                    help="Azure deployment name for text cleanup",
+                )
+                st.text_input(
+                    "Vision deployment (chart extraction / QA)",
+                    value=os.environ.get(
+                        "AZURE_OPENAI_VISION_DEPLOYMENT",
+                        OPENAI_DEFAULT_VISION_MODEL,
+                    ),
+                    key="azure_vision_deployment",
+                    help="Deployment name for gpt-4o-class vision model",
+                )
+
+        st.markdown("---")
+        st.markdown("### 🎯 Generation mode")
+        mode = st.radio(
+            "Mode",
+            options=["single", "compare"],
+            format_func=lambda m: "Single style" if m == "single" else "Style comparison (3-way)",
+            key="gen_mode",
+        )
+
+        st.markdown("### 📋 Style (single mode)")
+        selected_style_key = st.selectbox(
+            "Visual style",
+            options=list(STYLES.keys()),
+            format_func=lambda k: STYLES[k]["name"],
+            index=0,
+            key="single_style",
+            disabled=(mode == "compare"),
+        )
+        if mode == "single":
+            st.caption(STYLES[selected_style_key]["description"])
+
+        st.markdown("---")
+        logo_path = resolve_logo_path()
+        if logo_path:
+            st.success(f"Logo file found: `{logo_path.name}`")
+        else:
+            st.info(
+                "Place `uab-medicine-logo.jpg` in `assets/` or set `UAB_MEDICINE_LOGO_PATH`. "
+                "Post-processing will composite the approved logo when the file is available."
+            )
+
+    col_main, col_doc = st.columns([1, 1])
+
+    with col_main:
+        st.markdown("### 👥 Audience")
+        audience = st.radio(
+            "Who is this for?",
+            options=["academic", "clinical", "patient", "community"],
+            format_func=lambda a: {
+                "academic": "Academic / research",
+                "clinical": "Clinical / HCP",
+                "patient": "Patient / lay audience",
+                "community": "Community outreach",
+            }[a],
+            horizontal=True,
+            key="audience_radio",
+        )
+
+        st.markdown("### ✏️ Context")
+        user_context = st.text_area(
+            "Describe the topic and key points",
+            height=200,
+            key="user_context_area",
+            placeholder="Be specific. Only include data you want shown on charts.",
+        )
+
+        size = st.selectbox(
+            "Image size",
+            options=["1024x1024", "1024x1792", "1792x1024"],
+            index=2,
+            key="img_size",
+            help="1792x1024 = 16:9 (recommended for infographics) | 2K (2560x1440) is supported but flagged as experimental by OpenAI — results may be more variable above this resolution",
+        )
+        quality = st.selectbox("Quality", options=["high", "medium"], index=0, key="img_quality")
+
+        compare_style_keys: list[str] = []
+        if mode == "compare":
+            st.markdown("### 🔀 Pick 3 styles to compare")
+            keys = list(STYLES.keys())
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                s1 = st.selectbox("Style A", keys, index=0, key="cmp_s1")
+            with c2:
+                s2 = st.selectbox("Style B", keys, index=min(1, len(keys) - 1), key="cmp_s2")
+            with c3:
+                s3 = st.selectbox("Style C", keys, index=min(2, len(keys) - 1), key="cmp_s3")
+            compare_style_keys = [s1, s2, s3]
+            if len(set(compare_style_keys)) < 3:
+                st.warning("Choose three different styles for a meaningful comparison.")
+
+        phi_ok = st.checkbox(
+            "I confirm this content does NOT contain protected health information (PHI).",
+            value=False,
+            key="phi_confirm",
+        )
+
+    with col_doc:
+        st.markdown("### 📄 Documents (PDF, DOCX, TXT)")
+        st.caption(f"Max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per file. Uploaded content is summarized in PHI guidance.")
+        uploaded_files = st.file_uploader(
+            "Upload files",
+            type=["pdf", "docx", "txt"],
+            accept_multiple_files=True,
+            key="docs_uploader",
+        )
+
+    file_issues: list[str] = []
+    files_list = list(uploaded_files) if uploaded_files else []
+    if files_list:
+        st.warning("⚠️ Documents are attached. Ensure no PHI before generating.")
+        for f in files_list:
+            ext = Path(f.name).suffix.lower()
+            if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+                file_issues.append(f"`{f.name}`: unsupported type")
+                continue
+            nbytes = getattr(f, "size", None)
+            if nbytes is None:
+                nbytes = len(f.getbuffer())
+            if nbytes > MAX_UPLOAD_BYTES:
+                file_issues.append(f"`{f.name}` exceeds 10MB")
+
+    sanitized_context, inj_flags_context = sanitize_input(user_context)
+
+    extracted_preview: list[tuple[str, str]] = []
+    for f in files_list:
+        _sz = getattr(f, "size", None) or len(f.getbuffer())
+        if Path(f.name).suffix.lower() in ALLOWED_UPLOAD_EXTENSIONS and _sz <= MAX_UPLOAD_BYTES:
+            extracted_preview.append((f.name, extract_document_text(f)))
+
+    combined_docs = "\n".join(t for _, t in extracted_preview)
+    _, inj_flags_docs = sanitize_input(combined_docs)
+    inj_rule_ids = sorted(set(inj_flags_context + inj_flags_docs))
+
+    if inj_rule_ids:
+        shown = ", ".join(injection_labels_for_ids(inj_rule_ids))
+        st.error(
+            "Possible prompt-injection patterns were detected — revise your text before generating. "
+            f"Flags: {shown}"
+        )
+
+    if file_issues:
+        for issue in file_issues:
+            st.error(issue)
+
+    with st.expander("📖 Extracted document preview", expanded=False):
+        if extracted_preview:
+            for name, text in extracted_preview:
+                preview = sanitize_input(text)[0][:1500]
+                st.markdown(f"**{name}** ({len(text)} chars)")
+                st.text(preview + ("..." if len(text) > 1500 else ""))
+        else:
+            st.caption("Upload PDF, DOCX, or TXT to preview extracted text.")
+
+    # ── API helpers (used by chart extraction + generation) ──
+    def get_credentials() -> tuple[bool, str, Any, str, str]:
+        if provider == "openai":
+            api_key = st.session_state.get("openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
+            chat_model = (
+                st.session_state.get("openai_chat_model", "") or OPENAI_DEFAULT_CHAT_MODEL
+            )
+            img_model = (
+                st.session_state.get("openai_image_model", "").strip()
+                or os.environ.get("OPENAI_IMAGE_MODEL", "")
+                or OPENAI_DEFAULT_IMAGE_MODEL
+            )
+            if not api_key:
+                return False, "OpenAI API key is required.", None, "", chat_model
+            client = make_client("openai", api_key, None, None)
+            return True, "", client, img_model, chat_model
+        api_key = st.session_state.get("azure_api_key", "") or os.environ.get(
+            "AZURE_OPENAI_API_KEY", ""
+        )
+        endpoint = st.session_state.get("azure_endpoint", "") or os.environ.get(
+            "AZURE_OPENAI_ENDPOINT", ""
+        )
+        api_version = st.session_state.get("azure_api_version", "") or os.environ.get(
+            "AZURE_OPENAI_API_VERSION", "2024-12-01-preview"
+        )
+        img_model = st.session_state.get("azure_image_model", "") or os.environ.get(
+            "AZURE_OPENAI_IMAGE_MODEL", "gpt-image-2"
+        )
+        chat_model = st.session_state.get("azure_chat_model", "") or os.environ.get(
+            "AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini"
+        )
+        if not api_key or not endpoint:
+            return False, "Azure API key and endpoint are required.", None, "", chat_model
+        client = make_client("azure", api_key, endpoint, api_version)
+        return True, "", client, img_model, chat_model
+
+    def get_vision_model_name() -> str:
+        if provider == "openai":
+            return (
+                st.session_state.get("openai_vision_model", "").strip()
+                or os.environ.get("OPENAI_VISION_MODEL", OPENAI_DEFAULT_VISION_MODEL)
+            )
+        return (
+            st.session_state.get("azure_vision_deployment", "").strip()
+            or os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT", OPENAI_DEFAULT_VISION_MODEL)
+        )
+
+    def run_cleanups(client: Any, chat_model: str) -> tuple[list[str], list[str]]:
+        cleaned: list[str] = []
+        notes: list[str] = []
+        cache: dict[str, str] = st.session_state.cleaned_docs_cache
+        for name, raw in extracted_preview:
+            c, _ = sanitize_input(raw)
+            if not c.strip():
+                continue
+            ck = cache_key_for_raw(name, c)
+            if ck in cache:
+                cleaned.append(cache[ck])
+                continue
+            set_progress(progress_bar, status_label, "Cleaning document text", 0.35)
+            result = clean_document_text_llm(client, provider, chat_model, c)
+            cleaned.append(result.text)
+            cache[ck] = result.text
+            if result.truncated_input:
+                notes.append(
+                    f"`{name}`: large document — sanitized in {result.chunks_processed} chunk(s); "
+                    "review the preview for completeness."
+                )
+        return cleaned, notes
+
+    # ── Chart accuracy inputs & verification (SPEC §19) ────────
+    st.markdown("### 📊 Chart accuracy inputs")
+    st.caption(
+        "Upload existing chart or figure (optional). This helps preserve structure, labels, and layout. "
+        "For best accuracy, also provide raw data or confirm extracted values before generation."
+    )
+    includes_charts_chk = st.checkbox(
+        "This infographic includes charts, statistics, confidence intervals, or numeric data "
+        "(verification workflow)",
+        key="infographic_includes_charts",
+        help="When enabled, generation is blocked until every chart is verified, placeholder-approved, or removed.",
+    )
+    chart_figures = st.file_uploader(
+        "Upload existing chart or figure",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        key="chart_figure_uploader",
+    )
+    chart_data_files = st.file_uploader(
+        "Upload raw data (CSV, XLSX, JSON)",
+        type=["csv", "xlsx", "json"],
+        accept_multiple_files=True,
+        key="chart_data_uploader",
+    )
+    chart_context_snippet = st.text_area(
+        "Optional: paste extra source text for extraction cross-check",
+        height=80,
+        key="chart_context_snippet",
+        help="Shown to the vision model when extracting from chart images.",
+    )
+    snippet_txt = chart_context_snippet.strip()
+    cross_text = (snippet_txt + "\n" + combined_docs).strip()
+
+    st.checkbox(
+        "Cross-check chart numbers vs uploaded document text (may flag rounding differences or missing table values)",
+        value=False,
+        key="chart_cross_check_documents",
+    )
+    _cc = st.session_state.get("chart_cross_check_documents", False)
+
+    wf_charts_on = includes_charts_chk or bool(chart_figures) or bool(chart_data_files) or bool(
+        st.session_state.charts
+    )
+
+    fig_sigs: set[tuple[str, int]] = set(st.session_state.processed_chart_figure_sigs)
+    if chart_figures:
+        for f in chart_figures:
+            raw = f.getvalue()
+            nbytes = len(raw)
+            if nbytes > MAX_CHART_UPLOAD_BYTES:
+                st.error(f"`{f.name}` exceeds max upload size.")
+                continue
+            sig = (f.name, nbytes)
+            if sig in fig_sigs:
+                continue
+            fig_sigs.add(sig)
+            ext = Path(f.name).suffix.lower()
+            mime_map = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+            }
+            st.session_state.charts.append(
+                {
+                    "chart_id": new_chart_id(),
+                    "chart_type": "unknown",
+                    "title": Path(f.name).stem,
+                    "axis_labels": {},
+                    "axis_units": {},
+                    "category_labels": [],
+                    "legend_labels": [],
+                    "data_series": [],
+                    "footnotes": [],
+                    "source_citation": "",
+                    "verification_status": "unverified",
+                    "confidence_level": {},
+                    "data_source_types": ["chart_image"],
+                    "visual_reference": True,
+                    "chart_mode": "exact",
+                    "conflicts": [],
+                    "placeholder_text": "",
+                    "extraction_warnings": [],
+                    "source_file": f.name,
+                    "source_location": "",
+                    "low_confidence_fields": [],
+                    "_mime": mime_map.get(ext, "image/png"),
+                    "_bytes_b64": base64.b64encode(raw).decode("ascii"),
+                }
+            )
+    st.session_state.processed_chart_figure_sigs = fig_sigs
+
+    data_sigs: set[tuple[str, int]] = set(st.session_state.processed_data_file_sigs)
+    if chart_data_files:
+        for f in chart_data_files:
+            raw = f.getvalue()
+            nbytes = len(raw)
+            if nbytes > MAX_CHART_UPLOAD_BYTES:
+                st.error(f"`{f.name}` exceeds max upload size.")
+                continue
+            sig = (f.name, nbytes)
+            if sig in data_sigs:
+                continue
+            data_sigs.add(sig)
+            ext = Path(f.name).suffix.lower()
+            try:
+                if ext == ".csv":
+                    series = parse_csv_to_data_series(raw)
+                elif ext == ".json":
+                    series = parse_json_data_file(raw)
+                elif ext == ".xlsx":
+                    series = parse_xlsx_to_data_series(raw)
+                    if not series:
+                        st.warning("XLSX parse failed — install openpyxl or use CSV/JSON.")
+                else:
+                    series = []
+            except Exception as ex:
+                st.error(f"Could not parse `{f.name}`: {ex}")
+                series = []
+            dtype = ext.strip(".") or "file"
+            st.session_state.charts.append(
+                {
+                    "chart_id": new_chart_id(),
+                    "chart_type": "bar",
+                    "title": Path(f.name).stem,
+                    "axis_labels": {},
+                    "axis_units": {},
+                    "category_labels": [],
+                    "legend_labels": [],
+                    "data_series": series,
+                    "footnotes": [],
+                    "source_citation": "",
+                    "verification_status": "unverified",
+                    "confidence_level": {},
+                    "data_source_types": [dtype],
+                    "visual_reference": False,
+                    "chart_mode": "exact",
+                    "conflicts": [],
+                    "placeholder_text": "",
+                    "extraction_warnings": [],
+                    "source_file": f.name,
+                    "source_location": "",
+                    "low_confidence_fields": [],
+                }
+            )
+            c_last = st.session_state.charts[-1]
+            recompute_chart_status_after_change(c_last, cross_text, _cc)
+    st.session_state.processed_data_file_sigs = data_sigs
+
+    c1p, c2p, c3p = st.columns(3)
+    with c1p:
+        if st.button("➕ Add manual chart row (empty)", key="btn_add_manual_chart"):
+            st.session_state.charts.append(
+                {
+                    "chart_id": new_chart_id(),
+                    "chart_type": "manual",
+                    "title": "Manual entry",
+                    "axis_labels": {},
+                    "axis_units": {},
+                    "category_labels": [],
+                    "legend_labels": [],
+                    "data_series": [
+                        {"group": "", "value": "", "label": "", "unit": ""},
+                    ],
+                    "footnotes": [],
+                    "source_citation": "",
+                    "verification_status": "unverified",
+                    "confidence_level": {},
+                    "data_source_types": ["manual"],
+                    "visual_reference": False,
+                    "chart_mode": "exact",
+                    "conflicts": [],
+                    "placeholder_text": "",
+                    "extraction_warnings": [],
+                    "source_file": "",
+                    "source_location": "",
+                    "low_confidence_fields": [],
+                }
+            )
+            recompute_chart_status_after_change(st.session_state.charts[-1], cross_text, _cc)
+    with c2p:
+        if st.button("➕ Add placeholder chart", key="btn_add_placeholder_chart"):
+            st.session_state.charts.append(
+                {
+                    "chart_id": new_chart_id(),
+                    "chart_type": "placeholder",
+                    "title": "Approved placeholder",
+                    "axis_labels": {},
+                    "axis_units": {},
+                    "category_labels": [],
+                    "legend_labels": [],
+                    "data_series": [],
+                    "footnotes": [],
+                    "source_citation": "",
+                    "verification_status": "unverified",
+                    "confidence_level": {},
+                    "data_source_types": ["manual"],
+                    "visual_reference": False,
+                    "chart_mode": "exact",
+                    "conflicts": [],
+                    "placeholder_text": "Exact values to be inserted from [source figure/table]",
+                    "extraction_warnings": [],
+                    "source_file": "",
+                    "source_location": "",
+                    "low_confidence_fields": [],
+                }
+            )
+    with c3p:
+        if st.session_state.charts and st.button("🗑️ Clear all charts", key="btn_clear_charts"):
+            st.session_state.charts = []
+            st.session_state.processed_chart_figure_sigs = set()
+            st.session_state.processed_data_file_sigs = set()
+            st.rerun()
+
+    st.markdown("#### Verification")
+    for idx, chart in enumerate(list(st.session_state.charts)):
+        cid = chart.get("chart_id", f"idx_{idx}")
+        status = chart.get("verification_status", "unverified")
+        badge = {"verified": "✅ verified", "placeholder_approved": "✅ placeholder OK", "removed": "⛔ removed", "needs_review": "⚠️ needs review", "conflict_unresolved": "❌ conflict", "unverified": "⏳ unverified"}.get(
+            status, status
+        )
+        with st.expander(f"Chart {idx + 1}: {chart.get('title') or cid} — {badge}", expanded=(status not in ("verified", "placeholder_approved", "removed"))):
+            t1, t2 = st.columns(2)
+            with t1:
+                chart["title"] = st.text_input("Title", value=chart.get("title", ""), key=f"tit_{cid}")
+                chart["chart_type"] = st.text_input("Chart type", value=chart.get("chart_type", ""), key=f"ct_{cid}")
+            with t2:
+                chart["chart_mode"] = st.selectbox(
+                    "Chart mode",
+                    options=list(CHART_MODES),
+                    format_func=lambda m: {
+                        "exact": "Exact (default)",
+                        "style_transform": "Style transform (data locked)",
+                        "reference_only": "Reference-only (non-exact)",
+                    }[m],
+                    index=list(CHART_MODES).index(chart.get("chart_mode", "exact"))
+                    if chart.get("chart_mode") in CHART_MODES
+                    else 0,
+                    key=f"mode_{cid}",
+                )
+            chart["source_citation"] = st.text_input(
+                "Source citation", value=chart.get("source_citation", ""), key=f"src_{cid}"
+            )
+
+            ds_default = chart.get("data_series") or [{"group": "", "value": "", "label": "", "unit": ""}]
+            edited = st.data_editor(
+                pd.DataFrame(ds_default),
+                num_rows="dynamic",
+                key=f"de_{cid}",
+                use_container_width=True,
+            )
+            if edited is not None and not edited.empty:
+                chart["data_series"] = edited.to_dict(orient="records")
+
+            foot = "\n".join(chart.get("footnotes") or [])
+            nfoot = st.text_area("Footnotes (one per line)", value=foot, height=60, key=f"ft_{cid}")
+            chart["footnotes"] = [ln for ln in nfoot.splitlines() if ln.strip()]
+
+            if chart.get("_bytes_b64"):
+                st.caption("Figure upload — run extraction to populate fields from the image.")
+                ex_col = st.columns([1, 2])[0]
+                with ex_col:
+                    if st.button("Run GPT-4o extraction", key=f"ex_{cid}"):
+                        ok_e, err_e, client_e, _im, _cm = get_credentials()
+                        if not ok_e or client_e is None:
+                            st.error(err_e or "API not configured.")
+                        else:
+                            try:
+                                raw_b = base64.b64decode(chart["_bytes_b64"])
+                                mime = chart.get("_mime") or "image/png"
+                                extra = cross_text[:8000]
+                                if snippet_txt:
+                                    extra = snippet_txt[:8000]
+                                raw_j = gpt4o_extract_chart_from_image(
+                                    client_e, raw_b, mime, get_vision_model_name(), extra
+                                )
+                                cd = chart_dict_to_dataclass(chart)
+                                merge_extraction_into_chart(raw_j, cd)
+                                chart.update(cd.to_dict())
+                                chart["_bytes_b64"] = chart.get("_bytes_b64")
+                                chart["_mime"] = chart.get("_mime")
+                                recompute_chart_status_after_change(chart, cross_text, _cc)
+                                if chart.get("low_confidence_fields"):
+                                    chart["verification_status"] = "needs_review"
+                                st.session_state.chart_extraction_nonce += 1
+                                st.success("Extraction complete — review and confirm.")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(user_friendly_error(ex))
+
+            warns = chart.get("extraction_warnings") or []
+            lowc = chart.get("low_confidence_fields") or []
+            if warns or lowc:
+                st.warning(
+                    "Low confidence or warnings: "
+                    + "; ".join(warns)
+                    + (" | Fields: " + ", ".join(lowc) if lowc else "")
+                )
+
+            conf = chart.get("conflicts") or []
+            if conf:
+                st.error(
+                    "Possible conflict between chart values and source text — edit the data table "
+                    "to match your approved source, or document why values differ, then re-check."
+                )
+                for co in conf:
+                    st.markdown(
+                        f"- **{co.get('field')}** — document: `{co.get('document_value')}` vs chart: `{co.get('chart_image_value')}`"
+                    )
+                if st.button("Mark conflicts reviewed (I edited the data table)", key=f"cf_done_{cid}"):
+                    chart["conflicts"] = []
+                    chart["verification_status"] = "unverified"
+                    recompute_chart_status_after_change(chart, cross_text, _cc)
+                    st.rerun()
+
+            ph_cols = st.columns([2, 1])
+            with ph_cols[0]:
+                chart["placeholder_text"] = st.text_input(
+                    "Placeholder text (if using placeholder approval)",
+                    value=chart.get("placeholder_text", ""),
+                    key=f"pht_{cid}",
+                )
+            action_cols = st.columns(4)
+            with action_cols[0]:
+                if st.button("✓ Confirm chart data", key=f"vok_{cid}"):
+                    if chart.get("conflicts"):
+                        st.error("Resolve conflicts first (use Re-check after editing the table).")
+                    else:
+                        chart["verification_status"] = "verified"
+                        audit_entry = {
+                            "chart_id": chart.get("chart_id"),
+                            "source_file": chart.get("source_file"),
+                            "source_location": chart.get("source_location"),
+                            "source_type": "|".join(chart.get("data_source_types") or ["unknown"]),
+                            "verified_by_user": True,
+                            "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "final_chart_type": chart.get("chart_type"),
+                            "allowed_values_only": True,
+                            "conflicts_resolved": copy.deepcopy(chart.get("conflicts") or []),
+                        }
+                        log_chart_audit_trail(
+                            session_id,
+                            provider,
+                            selected_style_key if mode == "single" else "compare",
+                            audience,
+                            audit_entry,
+                        )
+                        audit_log(
+                            session_id,
+                            provider,
+                            selected_style_key if mode == "single" else "compare_run",
+                            audience,
+                            True,
+                            0,
+                            "chart_verified",
+                            {"chart_id": chart.get("chart_id")},
+                        )
+                        st.rerun()
+            with action_cols[1]:
+                if st.button("Placeholder OK", key=f"pok_{cid}"):
+                    chart["verification_status"] = "placeholder_approved"
+                    audit_entry = {
+                        "chart_id": chart.get("chart_id"),
+                        "source_file": chart.get("source_file"),
+                        "source_location": chart.get("source_location"),
+                        "source_type": "|".join(chart.get("data_source_types") or ["placeholder"]),
+                        "verified_by_user": True,
+                        "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "final_chart_type": "placeholder",
+                        "allowed_values_only": True,
+                        "conflicts_resolved": [],
+                    }
+                    log_chart_audit_trail(session_id, provider, selected_style_key, audience, audit_entry)
+                    st.rerun()
+            with action_cols[2]:
+                if st.button("Remove chart", key=f"rm_{cid}"):
+                    chart["verification_status"] = "removed"
+                    st.rerun()
+            with action_cols[3]:
+                if st.button("Re-check conflicts", key=f"rc_{cid}"):
+                    recompute_chart_status_after_change(chart, cross_text, _cc)
+                    st.rerun()
+
+    verified_charts_block = format_verified_charts_for_prompt(st.session_state.charts)
+
+    chart_blocked, chart_block_msg = chart_gate_blocks_generation(
+        wf_charts_on, st.session_state.charts
+    )
+    if wf_charts_on:
+        if chart_blocked:
+            st.error(f"Verification gate: {chart_block_msg}")
+        else:
+            st.success("Verification gate: all active charts are verified or placeholder-approved. ✅")
+
+    st.markdown("---")
+    tentative_prompt = ""
+
+    logo_extra = ""
+    if resolve_logo_path():
+        logo_extra = (
+            "\n- Technical note for layout: Leave the bottom edge clear or use a plain white band; "
+            "the application may composite the approved logo file onto a white footer after generation.\n"
+        )
+
+    tentative_prompt = build_infographic_prompt(
+        selected_style_key if mode == "single" else list(STYLES.keys())[0],
+        sanitized_context,
+        [regex_cleanup_fallback(combined_docs)] if combined_docs else [],
+        audience,
+        st.session_state.get("refinement_notes", ""),
+        logo_extra,
+        verified_charts_block=verified_charts_block,
+    )
+
+    with st.expander("View full prompt (audited locally only — never logged server-side)", expanded=False):
+        st.code(tentative_prompt[:12000] + ("\n...[truncated]..." if len(tentative_prompt) > 12000 else ""))
+
+    gen_disabled = (
+        not phi_ok
+        or bool(inj_rule_ids)
+        or bool(file_issues)
+        or (mode == "compare" and len(set(compare_style_keys)) < 3)
+        or (wf_charts_on and chart_blocked)
+    )
+
+    if mode == "single":
+        generate_btn = st.button(
+            "🎨 Generate infographic",
+            type="primary",
+            use_container_width=True,
+            disabled=gen_disabled,
+        )
+    else:
+        generate_btn = st.button(
+            "🎨 Generate 3-way comparison",
+            type="primary",
+            use_container_width=True,
+            disabled=gen_disabled,
+        )
+
+    progress_bar = st.progress(0.0)
+    status_label = st.empty()
+    error_box = st.empty()
+
+    if generate_btn:
+        ok, err_msg, client, image_model, chat_model = get_credentials()
+        if not ok:
+            error_box.error(err_msg)
+            return
+
+        assert client is not None
+
+        t0 = time.perf_counter()
+        try:
+            set_progress(progress_bar, status_label, "Building prompt", 0.1)
+            cleanup_notes: list[str] = []
+            if extracted_preview:
+                cleaned_docs, cleanup_notes = run_cleanups(client, chat_model)
+            else:
+                cleaned_docs = []
+            for line in cleanup_notes:
+                st.info(line)
+
+            styles_to_run = (
+                [selected_style_key] if mode == "single" else compare_style_keys
+            )
+            results: list[dict[str, Any]] = []
+            logo_file = resolve_logo_path()
+
+            gen_verified_block = format_verified_charts_for_prompt(st.session_state.charts)
+            st.session_state.last_verified_charts_block = gen_verified_block
+
+            refinement = str(st.session_state.get("refinement_notes", "") or "")
+
+            def run_single_style(style_id: str, store_prompt: bool) -> dict[str, Any]:
+                prompt = build_infographic_prompt(
+                    style_id,
+                    sanitized_context,
+                    cleaned_docs,
+                    audience,
+                    refinement,
+                    logo_extra,
+                    verified_charts_block=gen_verified_block,
+                )
+                if store_prompt:
+                    st.session_state.last_prompt = prompt
+                t_req = time.perf_counter()
+
+                def submit_progress(attempt: int) -> None:
+                    frac = 0.55 + 0.05 * attempt
+                    set_progress(progress_bar, status_label, "Submitting to API", frac)
+
+                try:
+                    image_ref = generate_with_retry(
+                        client,
+                        provider,
+                        image_model,
+                        prompt,
+                        size,
+                        quality,
+                        progress_callback=submit_progress,
+                    )
+                    set_progress(progress_bar, status_label, "Fetching image", 0.82)
+                    raw_bytes = fetch_image_bytes(image_ref)
+                    if logo_file:
+                        raw_bytes = composite_logo_footer(raw_bytes, logo_file)
+                    set_progress(progress_bar, status_label, "Displaying", 1.0)
+                    out = {
+                        "style_key": style_id,
+                        "bytes": raw_bytes,
+                        "prompt_len": len(prompt),
+                    }
+                    latency = int((time.perf_counter() - t_req) * 1000)
+                    audit_log(
+                        session_id,
+                        provider,
+                        style_id,
+                        audience,
+                        True,
+                        latency,
+                        "image_generation_compare" if mode == "compare" else "image_generation",
+                    )
+                    return out
+                except BaseException as exc:
+                    latency = int((time.perf_counter() - t_req) * 1000)
+                    audit_log(
+                        session_id,
+                        provider,
+                        style_id,
+                        audience,
+                        False,
+                        latency,
+                        "image_generation",
+                        {"error_kind": exc.__class__.__name__},
+                    )
+                    raise
+
+            if mode == "compare" and len(styles_to_run) == 3:
+                set_progress(progress_bar, status_label, "Submitting to API (3 parallel)", 0.55)
+
+                def parallel_worker(sid: str) -> dict[str, Any]:
+                    prompt = build_infographic_prompt(
+                        sid,
+                        sanitized_context,
+                        cleaned_docs,
+                        audience,
+                        refinement,
+                        logo_extra,
+                        verified_charts_block=gen_verified_block,
+                    )
+                    t_req = time.perf_counter()
+                    try:
+                        image_ref = generate_with_retry(
+                            client,
+                            provider,
+                            image_model,
+                            prompt,
+                            size,
+                            quality,
+                            progress_callback=None,
+                        )
+                        raw_bytes = fetch_image_bytes(image_ref)
+                        if logo_file:
+                            raw_bytes = composite_logo_footer(raw_bytes, logo_file)
+                        latency = int((time.perf_counter() - t_req) * 1000)
+                        audit_log(
+                            session_id,
+                            provider,
+                            sid,
+                            audience,
+                            True,
+                            latency,
+                            "image_generation_compare",
+                        )
+                        return {
+                            "style_key": sid,
+                            "bytes": raw_bytes,
+                            "prompt_len": len(prompt),
+                        }
+                    except BaseException as exc:
+                        latency = int((time.perf_counter() - t_req) * 1000)
+                        audit_log(
+                            session_id,
+                            provider,
+                            sid,
+                            audience,
+                            False,
+                            latency,
+                            "image_generation",
+                            {"error_kind": exc.__class__.__name__},
+                        )
+                        raise
+
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    futs = [pool.submit(parallel_worker, sid) for sid in styles_to_run]
+                    by_sid: dict[str, dict[str, Any]] = {}
+                    for fut in futs:
+                        row = fut.result()
+                        by_sid[row["style_key"]] = row
+                results = [by_sid[sid] for sid in styles_to_run]
+                set_progress(progress_bar, status_label, "Displaying", 1.0)
+            else:
+                for si, style_id in enumerate(styles_to_run):
+                    results.append(
+                        run_single_style(style_id, store_prompt=(mode == "single" and si == 0))
+                    )
+
+            if mode == "single" and results:
+                st.session_state.last_image_bytes = results[0]["bytes"]
+                st.session_state.generation_history.append(
+                    {
+                        "thumb_bytes": results[0]["bytes"],
+                        "style": results[0]["style_key"],
+                        "ts": time.time(),
+                        "audience": audience,
+                    }
+                )
+            elif mode == "compare":
+                st.session_state.comparison_results = results
+
+            progress_bar.progress(1.0)
+            st.success("Done.")
+
+        except BaseException as exc:
+            error_box.error(user_friendly_error(exc))
+            audit_log(
+                session_id,
+                provider,
+                styles_to_run[0] if styles_to_run else "",
+                audience,
+                False,
+                int((time.perf_counter() - t0) * 1000),
+                "batch_failed",
+                {"error_kind": exc.__class__.__name__},
+            )
+        finally:
+            pass
+
+    # ── Output: single ──
+    if st.session_state.last_image_bytes and mode == "single":
+        st.markdown("### 🖼️ Latest infographic")
+        st.image(st.session_state.last_image_bytes, use_container_width=True)
+        st.download_button(
+            "📥 Download PNG",
+            data=st.session_state.last_image_bytes,
+            file_name="uab_infographic.png",
+            mime="image/png",
+            use_container_width=True,
+            key="dl_single",
+        )
+        with st.expander("📋 Post-generation chart QA (vision check vs verified data)", expanded=False):
+            has_vb = bool(str(st.session_state.get("last_verified_charts_block", "") or "").strip())
+            st.caption(
+                "Compares the generated image to the last verified chart block sent in the prompt (SPEC §19i). "
+                "Runs an extra vision call — leave disabled to save cost unless you need it."
+            )
+            allow_qa = st.checkbox(
+                "I want to run chart QA (uses vision API credits)",
+                value=False,
+                key="post_gen_chart_qa_enable",
+            )
+            if not has_vb:
+                st.info("No verified chart block was in the last prompt — QA is not applicable.")
+            if st.button(
+                "Run automated QA",
+                key="btn_post_gen_chart_qa",
+                disabled=(not has_vb or not allow_qa),
+            ):
+                ok_q, err_q, client_q, _im_q, _cm_q = get_credentials()
+                if not ok_q or client_q is None:
+                    st.error(err_q or "Configure API keys for QA.")
+                else:
+                    try:
+                        qa_txt = run_post_generation_chart_qa(
+                            client_q,
+                            get_vision_model_name(),
+                            st.session_state.last_image_bytes,
+                            str(st.session_state.get("last_verified_charts_block", "") or ""),
+                        )
+                        st.markdown(qa_txt)
+                        audit_log(
+                            session_id,
+                            provider,
+                            selected_style_key,
+                            audience,
+                            True,
+                            0,
+                            "post_generation_chart_qa",
+                        )
+                    except BaseException as ex:
+                        st.error(user_friendly_error(ex))
+        refinement = st.text_area(
+            "Refinement notes (next generation)",
+            key="refinement_loop_area",
+            height=90,
+            placeholder="e.g. Emphasize the screening workflow; enlarge the headline.",
+        )
+        if st.button(
+            "🔁 Save refinement notes and prepare next run",
+            key="btn_refine",
+            help="Applies your notes to the next prompt. Click “Generate infographic” again.",
+        ):
+            st.session_state.refinement_notes = refinement
+            st.rerun()
+
+    # ── Output: comparison ──
+    if st.session_state.comparison_results and mode == "compare":
+        st.markdown("### 🖼️ Style comparison")
+        cols = st.columns(3)
+        for i, col in enumerate(cols):
+            if i >= len(st.session_state.comparison_results):
+                continue
+            r = st.session_state.comparison_results[i]
+            with col:
+                st.caption(STYLES[r["style_key"]]["name"])
+                st.image(r["bytes"], use_container_width=True)
+                st.download_button(
+                    "Download",
+                    data=r["bytes"],
+                    file_name=f"uab_compare_{r['style_key']}.png",
+                    mime="image/png",
+                    use_container_width=True,
+                    key=f"dl_cmp_{i}",
+                )
+
+    if st.session_state.generation_history:
+        with st.expander("📚 Recent generations (this session)", expanded=False):
+            for idx, entry in enumerate(reversed(st.session_state.generation_history[-8:])):
+                st.caption(f"{entry.get('style', '')} · {entry.get('audience', '')}")
+                st.image(entry["thumb_bytes"], use_container_width=True)
+
+    st.markdown(
+        "<hr style='margin-top:32px;border-color:#E8F6F5'>"
+        "<p style='color:#6B6B6B;font-size:12px;text-align:center'>"
+        "UAB Medicine Infographic Generator · Brand: UAB Medicine colors only · No Athletic Gold (#E87722)"
+        "</p>",
+        unsafe_allow_html=True,
+    )
