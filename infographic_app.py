@@ -1840,7 +1840,7 @@ def main() -> None:
                 key=f"de_{cid}",
                 use_container_width=True,
             )
-            if len(edited):
+            if edited is not None and not edited.empty:
                 chart["data_series"] = edited.to_dict(orient="records")
 
             foot = "\n".join(chart.get("footnotes") or [])
