@@ -62,22 +62,102 @@ def chart_dict_to_dataclass(d: dict[str, Any]) -> ChartData:
     return ChartData.from_dict(d)
 
 
-def parse_json_relaxed(text: str) -> Any:
-    t = text.strip()
-    if t.startswith("```"):
-        t = re.sub(r"^```(?:json)?\s*", "", t)
-        t = re.sub(r"\s*```$", "", t)
+def _parse_json_fallback_dict(detail: str = "") -> dict[str, Any]:
+    msg = "Vision model returned invalid JSON — try extraction again or edit fields manually."
+    if detail.strip():
+        msg = f"{msg} ({detail.strip()[:200]})"
+    return {
+        "chart_type": "json_parse_error",
+        "data_series": [],
+        "extraction_warnings": [msg],
+        "confidence_level": {"parse": "low"},
+    }
+
+
+def _chat_completion_content_as_text(content: Any) -> str:
+    """Normalize OpenAI-style message content (Gemini/other may use str or multimodal lists)."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                t = item.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+            elif getattr(item, "text", None) is not None and isinstance(item.text, str):
+                parts.append(item.text)
+        return "\n".join(x.strip() for x in parts if x and str(x).strip()).strip()
+    return str(content).strip()
+
+
+def _json_candidate_strings(raw: str) -> list[str]:
+    """Build substrings likely to contain JSON (Gemini often adds prose / markdown fences)."""
+    t = raw.strip()
+    if not t:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(s: str) -> None:
+        s = s.strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+
+    add(t)
+    add(re.sub(r"^```(?:json)?\s*", "", t, flags=re.IGNORECASE))
+    add(re.sub(r"\s*```\s*$", "", t))
+
+    # Any fenced blocks anywhere in the response
+    for m in re.finditer(r"```(?:json)?\s*\r?\n(.*?)```", t, flags=re.DOTALL | re.IGNORECASE):
+        blk = m.group(1).strip()
+        blk = re.sub(r"^(?:json)\s*", "", blk, flags=re.IGNORECASE)
+        add(blk)
+    for m in re.finditer(r"```(?:json)?\s*(.*?)```", t, flags=re.DOTALL | re.IGNORECASE):
+        blk = m.group(1).strip()
+        blk = re.sub(r"^(?:json)\s*", "", blk, flags=re.IGNORECASE)
+        add(blk)
+
+    return out
+
+
+def _try_decode_json_dict(text: str) -> Optional[dict[str, Any]]:
+    decoder = json.JSONDecoder()
+    cand = text.strip()
+    if not cand:
+        return None
     try:
-        return json.loads(t)
+        val = json.loads(cand)
+        return val if isinstance(val, dict) else None
     except json.JSONDecodeError:
-        return {
-            "chart_type": "json_parse_error",
-            "data_series": [],
-            "extraction_warnings": [
-                "Vision model returned invalid JSON — try extraction again or edit fields manually."
-            ],
-            "confidence_level": {"parse": "low"},
-        }
+        pass
+    # Embedded JSON object (leading prose / trailing commentary)
+    for i, ch in enumerate(cand):
+        if ch != "{":
+            continue
+        try:
+            obj, _end = decoder.raw_decode(cand[i:])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def parse_json_relaxed(text: str) -> Any:
+    if text is None or not str(text).strip():
+        return _parse_json_fallback_dict("Empty model response")
+    for cand in _json_candidate_strings(str(text)):
+        parsed = _try_decode_json_dict(cand)
+        if parsed is not None:
+            return parsed
+    snippet = str(text).strip().replace("\n", " ")
+    if len(snippet) > 300:
+        snippet = snippet[:297] + "..."
+    return _parse_json_fallback_dict(f"snippet: {snippet}")
 
 
 def _float_try(x: Any) -> Optional[float]:
@@ -215,8 +295,10 @@ def gpt4o_extract_chart_from_image(
     b64 = base64.b64encode(image_bytes).decode("ascii")
     data_url = f"data:{mime_type};base64,{b64}"
     user_text = (
-        "Extract the chart faithfully into JSON per schema. "
-        "Flag unreadable elements with low confidence."
+        "Extract the chart faithfully into JSON matching the system schema. "
+        "Output exactly one JSON object with no prose before or after it. "
+        "Do not use markdown fences. "
+        "Flag unreadable elements with low confidence in confidence_level."
     )
     if extra_context.strip():
         user_text += "\n\nSource document excerpt for cross-check:\n" + extra_context[:6000]
@@ -235,7 +317,7 @@ def gpt4o_extract_chart_from_image(
         temperature=0.1,
         max_tokens=4096,
     )
-    content = (resp.choices[0].message.content or "").strip()
+    content = _chat_completion_content_as_text(resp.choices[0].message.content)
     out = parse_json_relaxed(content)
     if isinstance(out, dict):
         return out
@@ -484,7 +566,7 @@ def run_post_generation_chart_qa(
         temperature=0.2,
         max_tokens=1024,
     )
-    return (resp.choices[0].message.content or "").strip()
+    return _chat_completion_content_as_text(resp.choices[0].message.content)
 
 
 def run_publication_fidelity_qa(
@@ -540,7 +622,7 @@ def run_publication_fidelity_qa(
         temperature=0.1,
         max_tokens=1200,
     )
-    content = (resp.choices[0].message.content or "").strip()
+    content = _chat_completion_content_as_text(resp.choices[0].message.content)
     parsed = parse_json_relaxed(content)
     if isinstance(parsed, dict) and "pass" in parsed:
         return parsed
