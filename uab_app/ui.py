@@ -155,6 +155,8 @@ def init_session_state() -> None:
         st.session_state.last_fidelity_qa_result = None
     if "last_fidelity_qa_pass" not in st.session_state:
         st.session_state.last_fidelity_qa_pass = False
+    if "last_post_gen_chart_qa_text" not in st.session_state:
+        st.session_state.last_post_gen_chart_qa_text = ""
 
 
 def set_progress(
@@ -1279,6 +1281,7 @@ def main() -> None:
                 st.session_state.last_image_bytes = results[0]["bytes"]
                 st.session_state.last_fidelity_qa_pass = False
                 st.session_state.last_fidelity_qa_result = None
+                st.session_state.last_post_gen_chart_qa_text = ""
                 st.session_state.generation_history.append(
                     {
                         "thumb_bytes": results[0]["bytes"],
@@ -1331,11 +1334,12 @@ def main() -> None:
         with st.expander("📋 Review charts in the generated image (vision QA)", expanded=True):
             has_ref = bool(str(st.session_state.get("last_chart_reference_block", "") or "").strip())
             st.caption(
-                "Inspects the **rendered** infographic for chart accuracy. "
+                "The vision model reads your **exported PNG** and returns bullet-point feedback **below** "
+                "(saved until you generate again or clear it). "
                 + (
-                    "If you uploaded a publication reference, the model compares the image to that data."
+                    "With a chart reference in the last prompt, it compares on-screen numbers/labels to that reference."
                     if has_ref
-                    else "No chart reference was in the last prompt — review is based only on pixels in the image."
+                    else "No chart reference was in the last prompt — it comments only on what it can read in the image."
                 )
             )
             allow_qa = st.checkbox(
@@ -1376,7 +1380,7 @@ def main() -> None:
                                 st.session_state.last_image_bytes,
                                 str(st.session_state.get("last_chart_reference_block", "") or ""),
                             )
-                            st.markdown(qa_txt)
+                            st.session_state.last_post_gen_chart_qa_text = qa_txt or ""
                         audit_log(
                             session_id,
                             provider,
@@ -1388,6 +1392,14 @@ def main() -> None:
                         )
                     except BaseException as ex:
                         st.error(user_friendly_error(ex))
+            if not publication_fidelity_mode:
+                qa_saved = (st.session_state.get("last_post_gen_chart_qa_text") or "").strip()
+                if qa_saved:
+                    st.markdown("#### Chart review output")
+                    st.markdown(qa_saved)
+                    if st.button("Clear chart review output", key="btn_clear_post_gen_qa", type="secondary"):
+                        st.session_state.last_post_gen_chart_qa_text = ""
+                        st.rerun()
             if publication_fidelity_mode and st.session_state.get("last_fidelity_qa_result") is not None:
                 st.caption("Latest publication-fidelity result")
                 st.json(st.session_state.last_fidelity_qa_result)
