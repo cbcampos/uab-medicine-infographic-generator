@@ -644,9 +644,23 @@ def main() -> None:
             refresh_chart_reference_hints(c_last, cross_text, _cc)
     st.session_state.processed_data_file_sigs = data_sigs
 
+    st.markdown("**Optional: add data without uploading a file**")
+    st.caption(
+        "Use these when your numbers live elsewhere (another document or tab) or you want to reserve "
+        "space before you paste values. Uploaded figures and data files stay above; these buttons add "
+        "extra reference rows below."
+    )
     c1p, c2p, c3p = st.columns(3)
     with c1p:
-        if st.button("➕ Add manual chart row (empty)", key="btn_add_manual_chart"):
+        st.caption(
+            "**Manual chart row** — Adds an empty table you fill in: groups, values, units, and notes. "
+            "Best when you are typing or pasting real numbers (for example from a paper or slide you have open)."
+        )
+        if st.button(
+            "➕ Add manual chart row (empty)",
+            key="btn_add_manual_chart",
+            help="Creates a new reference with a data grid in the expander below. No file upload required.",
+        ):
             st.session_state.charts.append(
                 {
                     "chart_id": new_chart_id(),
@@ -676,7 +690,15 @@ def main() -> None:
             )
             refresh_chart_reference_hints(st.session_state.charts[-1], cross_text, _cc)
     with c2p:
-        if st.button("➕ Add placeholder chart", key="btn_add_placeholder_chart"):
+        st.caption(
+            "**Placeholder chart** — No numeric grid. Adds a labeled box whose text is sent to the model so "
+            "the infographic can show “values to follow” or similar without inventing numbers."
+        )
+        if st.button(
+            "➕ Add placeholder chart",
+            key="btn_add_placeholder_chart",
+            help="Adds a placeholder entry; edit the wording in its expander. Use when values are not finalized.",
+        ):
             st.session_state.charts.append(
                 {
                     "chart_id": new_chart_id(),
@@ -703,7 +725,15 @@ def main() -> None:
                 }
             )
     with c3p:
-        if st.session_state.charts and st.button("🗑️ Clear all charts", key="btn_clear_charts"):
+        st.caption(
+            "**Clear all charts** — Removes every reference in this list (uploads, manual rows, and placeholders) "
+            "for this session."
+        )
+        if st.session_state.charts and st.button(
+            "🗑️ Clear all charts",
+            key="btn_clear_charts",
+            help="Deletes all chart references. Re-upload or re-add anything you still need.",
+        ):
             st.session_state.charts = []
             st.session_state.processed_chart_figure_sigs = set()
             st.session_state.processed_data_file_sigs = set()
