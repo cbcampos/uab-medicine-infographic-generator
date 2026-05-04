@@ -102,13 +102,41 @@ Athletic Gold (#E87722) is NOT part of the Medicine palette.
 - Keep the logo separate from watercolor effects, textures, shadows, illustrations, or background patterns.
 - If the logo cannot be reproduced exactly from the attached source, leave a blank white logo placement box labeled: "Approved UAB Medicine logo placement."
 
-**13. Chart/Data Accuracy Enforcement (CRITICAL)**
-- Do NOT fabricate, estimate, or hallucinate any data values, percentages, statistics, or chart data.
-- Only depict data that is explicitly provided in the source content or user-provided context.
-- If no specific data is provided, represent the concept generically without specific numbers.
-- All labels, axis values, and legend entries must match the source data exactly.
-- If provided data is insufficient for a complete chart, generate a placeholder with "Data to be inserted" label.
-- The app must include this as an explicit block in the prompt template — not optional.
+**13. Chart/Data Accuracy Enforcement (CRITICAL — updated with real failure analysis)**
+
+NEVER generate these chart types unless every numeric value is explicitly provided:
+- **Box plots** — model invents whisker values, quartiles, outliers when only median/IQR are given
+- **Forest plots** — model invents hazard ratios for outcome categories not explicitly in source
+- **Whisker elements, CI lines, or axis tick marks** — never infer these
+
+ALLOWED chart types (model can render these accurately):
+- **Dot-and-range / dot-and-IQR** — exact median dots + IQR range bars, nothing else
+- **Evidence callout cards** — single HR + CI value in a styled card, no multi-category forest
+- **Simple bar charts** — user-provided values only
+- **Pie charts** — user-provided percentages only
+- **Placeholder boxes** — labeled "Exact values to be inserted from [source figure/table]"
+
+EXACT prompt block:
+```
+## Chart/Data Accuracy Rules (STRICT — no exceptions)
+- Do NOT create box plots, forest plots, whisker elements, CI lines, or any chart with inferred data.
+- If the source provides only median + IQR: render a DOT-AND-RANGE chart with exact median dots and IQR range bars — nothing else.
+- If the source provides only a hazard ratio + CI: render a single EVIDENCE CALLOUT CARD with that exact HR and CI.
+- Do NOT display HRs by outcome subtype (e.g. HFpEF vs HFrEF) unless those exact values are explicitly provided.
+- If data is incomplete: generate a placeholder box labeled "Exact values to be inserted from [source figure/table]" — do not estimate or fill in.
+- All numeric labels, axis values, and legend entries must match the source EXACTLY.
+- Do NOT invent whiskers, quartile boundaries, outlier points, or any visual element not explicitly in the source.
+```
+
+**Safe chart alternatives by data type:**
+
+| Data available | Use this | Never use this |
+|---|---|---|
+| Median + IQR only | Dot-and-range chart | Box plot |
+| Single HR + CI | Evidence callout card | Forest plot |
+| Multiple subgroup HRs | Separate callout cards | Forest plot |
+| Percentages/proportions | Bar or pie | Invented axes |
+| Incomplete data | Placeholder box | Estimated fills |
 
 **14. Input Sanitization**
 - Strip control characters from user text and document content
@@ -138,6 +166,104 @@ Athletic Gold (#E87722) is NOT part of the Medicine palette.
 **18. Style Comparison Results**
 - Store last comparison results in `st.session_state`
 - Allow user to download any of the 3 results individually
+
+**19. Chart Verification Workflow (Major Feature — full extract-review-confirm pipeline)**
+
+**Core principle:** The image model should never create chart data from scratch. For any infographic that includes charts, numeric labels, axes, confidence intervals, percentages, sample sizes, legends, or statistical values, the app must first create a verified chart data object. The image model only renders from that verified object.
+
+**19a. Chart Input Step**
+- Section label: "Chart accuracy inputs"
+- User can provide one or more of:
+  - Upload raw data: CSV, XLSX, JSON
+  - Paste values manually (structured form: group, value, label, unit)
+  - Upload existing chart or figure: PNG, JPG, PDF crop, screenshot
+  - Upload or paste source document text
+- UI copy: "Upload existing chart or figure (optional). This helps preserve structure, labels, and layout. For best accuracy, also provide raw data or confirm extracted values before generation."
+- Backend: store data_source type and visual_reference separately, verification_status = unverified
+
+**19b. Chart Extraction Step**
+- When user uploads a chart image, run a vision/LLM extraction pass before generation
+- Extract and return as structured editable object:
+  - chart_type, title, axis_labels, axis_units, category_labels, legend_labels
+  - data_series: [{label, n, median, range_type, range_low, range_high, ...}]
+  - footnotes, source_citation, verification_status
+  - confidence_level per field (high/medium/low)
+- Use a vision-capable LLM call (GPT-4o or equivalent) to read the uploaded chart image
+- Output must be a structured JSON object, not prose
+
+**19c. Verification Screen**
+- Appears before generation when charts are detected in the content
+- Displays: extracted chart type, title, labels, values, CIs, ranges, footnotes, source notes
+- All fields are editable inline
+- Actions: Confirm chart data | Edit values | Use placeholder instead | Remove chart
+- **Status gate:** generation is blocked until all charts are: verified, placeholder_approved, or removed
+
+**19d. Confidence and Conflict Handling**
+- Flag low-confidence extractions with field-level warnings:
+  - "Could not verify Y-axis values"
+  - "Legend labels may be incomplete"
+  - "Values in chart image conflict with values in source document"
+- If conflict detected (document value ≠ chart image value), show both and require user to pick or edit
+- Conflict object: {field, document_value, chart_image_value, required_action: user_select_or_edit}
+- If only median + IQR provided: show warning "Box plots and whiskers are not allowed with this data"
+
+**19e. Data Sufficiency Rules (per chart type)**
+
+| Chart type | Required fields | Forbidden |
+|---|---|---|
+| Dot-and-range | group labels, central value (median/mean), range type (IQR/CI/SD/SE), range_low, range_high | whiskers, outliers, box elements |
+| Evidence callout | exact finding text, statistic (HR/or/mean diff), CI or P if provided | inferred HRs by subgroup |
+| Forest plot | outcome labels, group labels, point estimates, lower_ci, upper_ci, ref_line | HRs by subtype not explicitly in source |
+| Bar chart | category labels, values, units, axis label, denominator/sample_size if % | invented axes, extra categories |
+| Pie chart | category labels, percentages | invented segments |
+| Placeholder | label text only | any numeric values |
+
+**19f. Three Chart Modes**
+- **Exact chart mode** (default for academic/clinical): Verified data required. No inferred values. No embellishments. Placeholders for incomplete data.
+- **Style-transform mode**: Data locked, style can change, labels can be simplified only with user approval
+- **Reference-only mode**: Chart as visual inspiration only. Must be marked non-exact. Values cannot be copied unless extracted and verified.
+
+**19g. Verification Status Gate**
+- Each chart has status: verified | placeholder_approved | removed
+- Generation BLOCKED if any chart is: unverified | needs_review | conflict_unresolved
+- Status shown visually in UI (✅ verified / ⚠️ needs review / ❌ blocked)
+
+**19h. Audit Trail**
+Stored per chart:
+```json
+{
+  "chart_id": "chart_001",
+  "source_file": "le8_article.pdf",
+  "source_location": "page 2, Results section",
+  "source_type": "document_text | chart_image | csv | manual",
+  "verified_by_user": true,
+  "verified_at": "2026-05-04T12:00:00Z",
+  "final_chart_type": "dot_and_range",
+  "allowed_values_only": true,
+  "conflicts_resolved": [...]
+}
+```
+
+**19i. QA Checklist Before Export**
+After image generation, run a verification pass comparing the generated image against the verified chart object:
+- Are all chart labels present?
+- Are all values present?
+- Are any values added that were NOT in the verified object?
+- Are any values missing?
+- Are CIs shown correctly?
+- Are groups and legends matched correctly?
+- Are placeholders used where data was incomplete?
+- Are unsupported chart types blocked (box plot, forest plot without full data)?
+- If any check fails: surface the issue to the user for correction or regeneration.
+
+**19j. Final Prompt Chart Block**
+Every image prompt includes:
+```
+CHART ACCURACY RULES: Use only the verified chart data below. Do not infer, estimate, interpolate, or invent values. Do not add extra series, labels, axes, subgroups, confidence intervals, or legends. If any value is missing, render the approved placeholder text exactly. Preserve all numeric labels exactly.
+
+[VERIFIED CHART DATA]:
+{chart_type}: {exact_verified_data}
+```
 
 ---
 
@@ -171,12 +297,14 @@ Athletic Gold (#E87722) is NOT part of the Medicine palette.
 - Keep the logo separate from watercolor effects, textures, shadows, illustrations, or background patterns.
 - If the logo cannot be reproduced exactly from the attached source, leave a blank white logo placement box labeled: "Approved UAB Medicine logo placement."
 
-## Chart/Data Accuracy Rules  ← new
-- Do NOT fabricate, estimate, or hallucinate any data values, percentages, statistics, or chart data.
-- Only depict data that is explicitly provided in the source content or user-provided context.
-- If no specific data is provided, represent the concept generically without specific numbers.
-- All labels, axis values, and legend entries must match the source data exactly.
-- If the provided data is insufficient for a complete chart, generate a placeholder chart with the label "Data to be inserted" in the appropriate field.
+## Chart/Data Accuracy Rules (STRICT — no exceptions)
+- Do NOT create box plots, forest plots, whisker elements, CI lines, or any chart with inferred data.
+- If the source provides only median + IQR: render a DOT-AND-RANGE chart with exact median dots and IQR range bars — nothing else.
+- If the source provides only a hazard ratio + CI: render a single EVIDENCE CALLOUT CARD with that exact HR and CI.
+- Do NOT display HRs by outcome subtype (e.g. HFpEF vs HFrEF) unless those exact values are explicitly provided.
+- If data is incomplete: generate a placeholder box labeled "Exact values to be inserted from [source figure/table]" — do not estimate or fill in.
+- All numeric labels, axis values, and legend entries must match the source EXACTLY.
+- Do NOT invent whiskers, quartile boundaries, outlier points, or any visual element not explicitly in the source.
 
 ## Audience-Specific Guidelines  ← new
 {audience_guidance}
