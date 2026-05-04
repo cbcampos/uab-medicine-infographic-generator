@@ -731,6 +731,40 @@ def main() -> None:
             refresh_chart_reference_hints(c_last, cross_text, _cc)
     st.session_state.processed_data_file_sigs = data_sigs
 
+    has_chart_inputs = bool(st.session_state.charts or chart_figures or chart_data_files)
+    step_context_ready = bool(sanitized_context.strip() or extracted_preview)
+    step_refs_ready = has_chart_inputs
+    step_generate_ready = bool(phi_ok and not inj_rule_ids and not file_issues)
+    st.markdown("### Quick start")
+    q1, q2, q3 = st.columns(3)
+    with q1:
+        st.markdown(
+            (
+                "✅ **Step 1: Add topic context**\n\n"
+                "Describe the topic and/or upload source docs."
+            )
+            if step_context_ready
+            else "⬜ **Step 1: Add topic context**\n\nAdd context text or upload at least one source document."
+        )
+    with q2:
+        st.markdown(
+            (
+                "✅ **Step 2: Add chart references (optional)**\n\n"
+                "You have at least one uploaded or manual reference entry."
+            )
+            if step_refs_ready
+            else "⬜ **Step 2: Add chart references (optional)**\n\nSkip if not needed, or add a chart/file/manual row."
+        )
+    with q3:
+        st.markdown(
+            (
+                "✅ **Step 3: Ready to generate**\n\n"
+                "Safety checks are currently passing."
+            )
+            if step_generate_ready
+            else "⬜ **Step 3: Ready to generate**\n\nConfirm PHI checkbox and clear any warnings first."
+        )
+
     st.markdown("**Optional: add data without uploading a file**")
     st.caption(
         "Use these when your numbers live elsewhere (another document or tab) or you want to reserve "
