@@ -730,12 +730,14 @@ def build_infographic_prompt(
 - If the logo cannot be reproduced exactly from the attached source, leave a blank white logo placement box labeled: "Approved UAB Medicine logo placement."
 {logo_instructions_extra}
 
-## Chart/Data Accuracy Rules
-- Do NOT fabricate, estimate, or hallucinate any data values, percentages, statistics, or chart data.
-- Only depict data that is explicitly provided in the source content or user-provided context.
-- If no specific data is provided, represent the concept generically without specific numbers.
-- All labels, axis values, and legend entries must match the source data exactly.
-- If the provided data is insufficient for a complete chart, generate a placeholder chart with the label "Data to be inserted" in the appropriate field.
+## Chart/Data Accuracy Rules (STRICT — no exceptions)
+- Do NOT create box plots, forest plots, whisker elements, CI lines, or any chart with inferred data.
+- If the source provides only median + IQR: render a DOT-AND-RANGE chart with exact median dots and IQR range bars — nothing else.
+- If the source provides only a hazard ratio + CI: render a single EVIDENCE CALLOUT CARD with that exact HR and CI.
+- Do NOT display HRs by outcome subtype (e.g. HFpEF vs HFrEF) unless those exact values are explicitly provided.
+- If data is incomplete: generate a placeholder box labeled "Exact values to be inserted from [source figure/table]" — do not estimate or fill in.
+- All numeric labels, axis values, and legend entries must match the source EXACTLY.
+- Do NOT invent whiskers, quartile boundaries, outlier points, or any visual element not explicitly in the source.
 
 ## Audience-Specific Guidelines
 {aud}
