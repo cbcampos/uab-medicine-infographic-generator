@@ -1,14 +1,12 @@
-# UAB Medicine Infographic Generator
+# Infographic Generator
 
-Generate production-ready, branded infographics using GPT Image 2.0 (OpenAI direct or Azure OpenAI). Built for academic medicine — with UAB Medicine branding, PHI safeguards, audience targeting, and strict chart accuracy enforcement.
-
-**[→ Live app on your Mac](http://localhost:8502)** · **[→ GitHub repo](https://github.com/cbcampos/uab-medicine-infographic-generator)**
+Generate production-ready infographics using GPT Image 2.0 (OpenAI direct, Azure OpenAI, or Gemini image models where configured). Suited to academic medicine workflows — with optional logo compositing, PHI safeguards, audience targeting, and strict chart accuracy guidance.
 
 ---
 
 ## Features
 
-### 🎨 Visual Styles (10 UAB Medicine-branded)
+### 🎨 Visual Styles (10 curated styles)
 | Style | Best for |
 |---|---|
 | Hand-drawn Paper Craft | Patient education, community outreach |
@@ -42,8 +40,8 @@ Tailor tone, vocabulary, and visual density to your exact audience:
 - Incomplete data → placeholder boxes labeled "Exact values to be inserted from [source]"
 - No invented whiskers, quartile boundaries, or inferred HRs by subgroup
 
-**UAB Medicine Logo Compliance**
-- Only the approved logo file is used — never generated, redrawn, or modified
+**Logo compliance**
+- When a logo file is configured, only that file is used — never generated, redrawn, or modified
 - Explicit do-not-do rules in every prompt (no invented seals, shields, or brand marks)
 - Logo composited via Pillow (exact pixels) after generation
 
@@ -67,18 +65,16 @@ Upload PDFs, DOCX, or TXT files as source context. Content is:
 
 ---
 
-## Brand Colors
+## Default palette (styles)
 
 | Color | Hex | Use |
 |---|---|---|
-| UAB Green | `#1A5632` | Primary, headings, key elements |
-| UAB Gold | `#FFC72C` | Accents, highlights, emphasis |
+| Primary green | `#1A5632` | Primary, headings, key elements |
+| Accent yellow | `#FFC72C` | Accents, highlights, emphasis |
 | Navy | `#003A5C` | Secondary, text contrast |
-| Healing Teal | `#08948E` | Patient content, secondary accents |
+| Healing teal | `#08948E` | Patient content, secondary accents |
 
-> **Athletic Gold `#E87722` is NOT part of UAB Medicine** — it is explicitly forbidden in all generations.
-
-Brand guide: [uab.edu/brandguide/uab-medicine/colors](https://www.uab.edu/brandguide/uab-medicine/colors)
+> **Athletic Gold `#E87722`** is excluded from the default generation palette in prompts.
 
 ---
 
@@ -134,11 +130,11 @@ Open [http://localhost:8502](http://localhost:8502)
 
 ```
 infographic_app.py     ← all-in-one Streamlit app
-├── Style library      ← 10 UAB-branded visual styles
+├── Style library      ← 10 curated visual styles
 ├── Document parsers    ← PDF (PyPDF2), DOCX (python-docx), TXT
 ├── LLM cleanup        ← PHI scrub + OCR normalization via LLM
 ├── Prompt builder     ← assembles style + audience + docs + rules
-├── Image generator    ← OpenAI direct or Azure OpenAI
+├── Image generator    ← OpenAI, Azure OpenAI, or Gemini (where configured)
 ├── Logo compositor    ← Pillow composites approved logo post-generation
 ├── Retry logic        ← 3x backoff on failure
 └── Audit logger      ← JSON logs (no prompts stored)
@@ -181,7 +177,7 @@ Every generation runs through multiple enforcement layers:
 
 ## License
 
-Internal use — UAB Medicine / Forge AHEAD Center
+See the repository root for license and use terms.
 
 ---
 
