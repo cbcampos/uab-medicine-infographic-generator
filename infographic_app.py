@@ -758,6 +758,20 @@ def build_infographic_prompt(
 - Output in the same language as the provided content
 - TEXT IN IMAGE: Write any specific text EXACTLY as it should appear. Use ALL CAPS for titles/headlines. Spell out technical and medical terms letter by letter for accuracy (e.g. "H Y P E R T E N S I O N" not "hypertension" if that is the intended rendering). Do not approximate — if exact wording matters, quote it verbatim.
 
+## Slides, Diagrams & Charts — Artifact Spec Format (STRICT)
+- Treat this as an artifact spec, not an illustration request. Name the exact deliverable, define the canvas and visual hierarchy, and provide the real text or data.
+- For slides, charts, or diagram-heavy assets: include ALL numbers, labels, axes, and footnotes DIRECTLY in the prompt. Do not assume the model will fill in realistic-looking data — it must be explicit.
+- Use quality="high" for any image that contains small text, legends, axes, footnotes, or data labels.
+- Use landscape orientation (1792x1024) for deck-style outputs.
+- Design requirements: readable typography, polished spacing, clear data hierarchy, professional visual language.
+- AVOID: clip art, stock photography, gradients, shadows, decorative clutter, generic or overdesigned elements.
+- Structure chart/diagram content with exact values:
+  * BAR CHART: Label each bar exactly (e.g. "Group A: 43%", "Group B: 27%"), include axis labels and units.
+  * EVIDENCE CALLOUT: Quote the exact finding (e.g. "A 10-point higher LE8 score was associated with 28% lower risk of HF hospitalization. HR: 0.72; 95% CI: 0.66-0.79").
+  * DOT-AND-RANGE: Show exact median and IQR values as labeled markers.
+  * WORKFLOW DIAGRAM: List each step in sequence with exact wording.
+  * If data is incomplete: use a placeholder box labeled "Exact values to be inserted from [source figure/table]" — never estimate.
+
 ## Instructions
 Use the image generation model to create the illustration based on the provided input.
 
