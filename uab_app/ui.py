@@ -1,4 +1,4 @@
-"""Streamlit UI for UAB Medicine Infographic Generator."""
+"""Streamlit UI for the Infographic Generator."""
 
 from __future__ import annotations
 
@@ -171,7 +171,7 @@ def set_progress(
 # ─── Main app ───────────────────────────────────────────────────
 def main() -> None:
     st.set_page_config(
-        page_title="UAB Medicine Infographic Generator",
+        page_title="Infographic Generator",
         page_icon="🖼️",
         layout="wide",
     )
@@ -181,9 +181,9 @@ def main() -> None:
     st.markdown(
         "<div style='background:#1A5632;padding:16px 24px;border-radius:8px;margin-bottom:24px'>"
         "<h1 style='color:white;margin:0;font-family:Source Sans Pro,sans-serif'>"
-        "🖼️ UAB Medicine Infographic Generator</h1>"
+        "🖼️ Infographic Generator</h1>"
         "<p style='color:#FFC72C;margin:4px 0 0;font-size:14px'>"
-        "GPT Image 2.0 · OpenAI or Azure · UAB Medicine branding"
+        "GPT Image 2.0 · OpenAI or Azure"
         "</p></div>",
         unsafe_allow_html=True,
     )
@@ -433,6 +433,40 @@ def main() -> None:
                 st.text(preview + ("..." if len(text) > 1500 else ""))
         else:
             st.caption("Upload PDF, DOCX, or TXT to preview extracted text.")
+
+    has_chart_inputs = bool(st.session_state.charts or chart_figures or chart_data_files)
+    step_context_ready = bool(sanitized_context.strip() or extracted_preview)
+    step_refs_ready = has_chart_inputs
+    step_generate_ready = bool(phi_ok and not inj_rule_ids and not file_issues)
+    st.markdown("### Quick start")
+    q1, q2, q3 = st.columns(3)
+    with q1:
+        st.markdown(
+            (
+                "✅ **Step 1: Add topic context**\n\n"
+                "Describe the topic and/or upload source docs."
+            )
+            if step_context_ready
+            else "⬜ **Step 1: Add topic context**\n\nAdd context text or upload at least one source document."
+        )
+    with q2:
+        st.markdown(
+            (
+                "✅ **Step 2: Add chart references (optional)**\n\n"
+                "You have at least one uploaded or manual reference entry."
+            )
+            if step_refs_ready
+            else "⬜ **Step 2: Add chart references (optional)**\n\nSkip if not needed, or add a chart/file/manual row."
+        )
+    with q3:
+        st.markdown(
+            (
+                "✅ **Step 3: Ready to generate**\n\n"
+                "Safety checks are currently passing."
+            )
+            if step_generate_ready
+            else "⬜ **Step 3: Ready to generate**\n\nConfirm PHI checkbox and clear any warnings first."
+        )
 
     # ── API helpers (used by chart extraction + generation) ──
     def get_credentials() -> tuple[bool, str, Any, str, str]:
@@ -818,20 +852,34 @@ def main() -> None:
                     )
                 with t2:
                     chart["chart_mode"] = st.selectbox(
-                        "Chart mode",
+                        "How strictly should this chart be followed?",
                         options=list(CHART_MODES),
                         format_func=lambda m: {
-                            "exact": "Exact (default)",
-                            "style_transform": "Style transform (data locked)",
-                            "reference_only": "Reference-only (non-exact)",
+                            "exact": "Exact numbers (recommended)",
+                            "style_transform": "Restyle visual only (keep all data exact)",
+                            "reference_only": "Reference only (layout guidance, non-exact)",
                         }[m],
                         index=list(CHART_MODES).index(chart.get("chart_mode", "exact"))
                         if chart.get("chart_mode") in CHART_MODES
                         else 0,
                         key=f"mode_{cid}",
+                        help=(
+                            "Choose Exact for publication values. Use Restyle visual only when you want a "
+                            "different look but identical numbers. Use Reference only if exact data matching "
+                            "is not required for this entry."
+                        ),
                     )
                 chart["source_citation"] = st.text_input(
-                    "Source citation", value=chart.get("source_citation", ""), key=f"src_{cid}"
+                    "Source citation",
+                    value=chart.get("source_citation", ""),
+                    key=f"src_{cid}",
+                    placeholder="e.g. Journal Name. 2026;14(2):123-130. doi:10.xxxx/xxxx",
+                )
+                chart["source_location"] = st.text_input(
+                    "Source location (optional)",
+                    value=chart.get("source_location", ""),
+                    key=f"loc_{cid}",
+                    placeholder="e.g. Figure 2B, Table 1, Supplementary eFigure 3",
                 )
 
                 ds_default = chart.get("data_series") or [
@@ -902,11 +950,11 @@ def main() -> None:
                 )
                 a1, a2 = st.columns(2)
                 with a1:
-                    if st.button("Remove from prompt", key=f"rm_{cid}"):
+                    if st.button("Remove from prompt", key=f"rm_{cid}", type="secondary"):
                         chart["verification_status"] = "removed"
                         st.rerun()
                 with a2:
-                    if st.button("Refresh cross-check hints", key=f"rc_{cid}"):
+                    if st.button("Refresh cross-check hints", key=f"rc_{cid}", type="secondary"):
                         refresh_chart_reference_hints(chart, cross_text, _cc)
                         st.rerun()
 
@@ -945,8 +993,44 @@ def main() -> None:
         )
         st.code(tentative_prompt[:12000] + ("\n...[truncated]..." if len(tentative_prompt) > 12000 else ""))
 
+    credential_issue = ""
+    if provider == "openai":
+        key_val = st.session_state.get("openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
+        if not key_val:
+            credential_issue = "OpenAI API key is missing."
+    else:
+        key_val = st.session_state.get("azure_api_key", "") or os.environ.get("AZURE_OPENAI_API_KEY", "")
+        endpoint_val = st.session_state.get("azure_endpoint", "") or os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+        if not key_val or not endpoint_val:
+            credential_issue = "Azure API key and endpoint are required."
+
+    readiness_issues: list[str] = []
+    if not step_context_ready:
+        readiness_issues.append("Add topic context text or upload at least one source document.")
+    if not phi_ok:
+        readiness_issues.append("Confirm the PHI checkbox.")
+    if credential_issue:
+        readiness_issues.append(credential_issue)
+    if inj_rule_ids:
+        readiness_issues.append("Resolve possible prompt-injection flags in context/documents.")
+    if file_issues:
+        readiness_issues.append("Fix upload issues (unsupported type or oversized file).")
+    if mode == "compare" and len(set(compare_style_keys)) < 3:
+        readiness_issues.append("Pick three different styles for comparison mode.")
+    if publication_fidelity_mode and fidelity_preflight:
+        readiness_issues.append("Resolve publication fidelity preflight issues in chart references.")
+
+    st.markdown("### Readiness")
+    if readiness_issues:
+        st.warning("Generation is currently blocked:")
+        for issue in readiness_issues:
+            st.markdown(f"- {issue}")
+    else:
+        st.success("All checks passed. Ready to generate.")
+
     gen_disabled = (
         not phi_ok
+        or bool(credential_issue)
         or bool(inj_rule_ids)
         or bool(file_issues)
         or (mode == "compare" and len(set(compare_style_keys)) < 3)
@@ -1184,7 +1268,7 @@ def main() -> None:
         st.download_button(
             "📥 Download PNG",
             data=st.session_state.last_image_bytes,
-            file_name="uab_infographic.png",
+            file_name="infographic.png",
             mime="image/png",
             use_container_width=True,
             key="dl_single",
@@ -1257,11 +1341,16 @@ def main() -> None:
             "Refinement notes (next generation)",
             key="refinement_loop_area",
             height=90,
-            placeholder="e.g. Emphasize the screening workflow; enlarge the headline.",
+            placeholder=(
+                "e.g. Make title larger, reduce paragraph text by 30%, keep chart values exact, "
+                "and emphasize the screening workflow."
+            ),
         )
+        st.caption("Tip: include what to change, what to keep fixed, and which section it applies to.")
         if st.button(
             "🔁 Save refinement notes and prepare next run",
             key="btn_refine",
+            type="secondary",
             help="Applies your notes to the next prompt. Click “Generate infographic” again.",
         ):
             st.session_state.refinement_notes = refinement
@@ -1281,7 +1370,7 @@ def main() -> None:
                 st.download_button(
                     "Download",
                     data=r["bytes"],
-                    file_name=f"uab_compare_{r['style_key']}.png",
+                    file_name=f"infographic_compare_{r['style_key']}.png",
                     mime="image/png",
                     use_container_width=True,
                     key=f"dl_cmp_{i}",
@@ -1293,10 +1382,4 @@ def main() -> None:
                 st.caption(f"{entry.get('style', '')} · {entry.get('audience', '')}")
                 st.image(entry["thumb_bytes"], use_container_width=True)
 
-    st.markdown(
-        "<hr style='margin-top:32px;border-color:#E8F6F5'>"
-        "<p style='color:#6B6B6B;font-size:12px;text-align:center'>"
-        "UAB Medicine Infographic Generator · Brand: UAB Medicine colors only · No Athletic Gold (#E87722)"
-        "</p>",
-        unsafe_allow_html=True,
-    )
+    st.markdown("<hr style='margin-top:32px;border-color:#E8F6F5'>", unsafe_allow_html=True)
