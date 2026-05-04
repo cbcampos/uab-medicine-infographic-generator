@@ -430,12 +430,16 @@ def main() -> None:
 
     with col_doc:
         st.markdown("### 📄 Documents (PDF, DOCX, TXT)")
-        st.caption(f"Max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per file. Uploaded content is summarized in PHI guidance.")
+        st.caption(
+            f"Max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per file. These documents provide context and knowledge "
+            "for the infographic — the content will be extracted, cleaned, and included as source material in the generation prompt."
+        )
         uploaded_files = st.file_uploader(
             "Upload files",
             type=["pdf", "docx", "txt"],
             accept_multiple_files=True,
             key="docs_uploader",
+            help="Upload source documents (papers, articles, reports) to provide context and facts for the infographic. Text will be extracted and used as knowledge in the prompt.",
         )
 
     file_issues: list[str] = []
