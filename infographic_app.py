@@ -6,6 +6,8 @@ GPT Image 2.0 (OpenAI direct or Azure OpenAI) · notex-style prompt architecture
 from __future__ import annotations
 
 import base64
+import copy
+import csv
 import io
 import json
 import logging
@@ -14,8 +16,11 @@ import re
 import time
 import uuid
 import urllib.request
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Optional
+
+import pandas as pd
 
 import docx
 import PyPDF2
@@ -40,6 +45,60 @@ BACKOFF_BASE_S = 5
 
 OPENAI_DEFAULT_IMAGE_MODEL = "gpt-image-2"
 OPENAI_DEFAULT_CHAT_MODEL = "gpt-4o-mini"
+OPENAI_DEFAULT_VISION_MODEL = "gpt-4o"
+
+# Chart verification (SPEC §19)
+CHART_VERIFICATION_STATUSES = frozenset(
+    {
+        "unverified",
+        "needs_review",
+        "conflict_unresolved",
+        "verified",
+        "placeholder_approved",
+        "removed",
+    }
+)
+CHART_BLOCKING_STATUSES = frozenset({"unverified", "needs_review", "conflict_unresolved"})
+CHART_MODES = ("exact", "style_transform", "reference_only")
+CHART_DATA_FILE_EXT = {".csv", ".xlsx", ".json"}
+CHART_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
+MAX_CHART_UPLOAD_BYTES = MAX_UPLOAD_BYTES
+
+EXTRACTION_SYSTEM_PROMPT = """You extract structured data from medical/statistical charts for an infographic pipeline.
+Output ONLY valid JSON (no markdown fences, no commentary). Use this exact schema:
+{
+  "chart_type": string,
+  "title": string,
+  "axis_labels": {"x": string, "y": string},
+  "axis_units": {"x": string, "y": string},
+  "category_labels": [string],
+  "legend_labels": [string],
+  "data_series": [
+    {
+      "label": string,
+      "n": number or null,
+      "median": number or null,
+      "mean": number or null,
+      "value": number or null,
+      "range_type": "IQR"|"CI"|"SD"|"SE"|"min_max"|null,
+      "range_low": number or null,
+      "range_high": number or null,
+      "point_estimate": number or null,
+      "lower_ci": number or null,
+      "upper_ci": number or null,
+      "category": string,
+      "unit": string
+    }
+  ],
+  "footnotes": [string],
+  "source_citation": string,
+  "confidence_level": { "field.path": "high"|"medium"|"low" },
+  "extraction_warnings": [string],
+  "suggested_chart_render": "dot_and_range"|"evidence_callout"|"bar"|"pie"|"placeholder"|"other"
+}
+If the image is not a chart, set chart_type to "not_a_chart" and data_series to [].
+Never invent values: if unreadable, use null and lower confidence.
+"""
 
 INJECTION_PATTERNS = [
     re.compile(r"(?i)ignore\s+(all\s+)?(previous|prior)\s+instructions"),
@@ -110,6 +169,423 @@ def audit_log(
     }
     if extra:
         row.update(extra)
+    _audit_logger.info(json.dumps(row))
+
+
+# ─── Chart verification data model & helpers (SPEC §19) ────────
+@dataclass
+class ChartData:
+    chart_id: str
+    chart_type: str = "unknown"
+    title: str = ""
+    axis_labels: dict[str, str] = field(default_factory=dict)
+    axis_units: dict[str, str] = field(default_factory=dict)
+    category_labels: list[str] = field(default_factory=list)
+    legend_labels: list[str] = field(default_factory=list)
+    data_series: list[dict[str, Any]] = field(default_factory=list)
+    footnotes: list[str] = field(default_factory=list)
+    source_citation: str = ""
+    verification_status: str = "unverified"
+    confidence_level: dict[str, str] = field(default_factory=dict)
+    data_source_types: list[str] = field(default_factory=list)
+    visual_reference: bool = False
+    chart_mode: str = "exact"
+    conflicts: list[dict[str, Any]] = field(default_factory=list)
+    placeholder_text: str = ""
+    extraction_warnings: list[str] = field(default_factory=list)
+    source_file: str = ""
+    source_location: str = ""
+    low_confidence_fields: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d: dict[str, Any]) -> ChartData:
+        known = {f.name for f in fields(ChartData)}
+        clean = {k: v for k, v in d.items() if k in known}
+        return ChartData(**clean)
+
+
+def new_chart_id() -> str:
+    return f"chart_{uuid.uuid4().hex[:10]}"
+
+
+def chart_dict_to_dataclass(d: dict[str, Any]) -> ChartData:
+    return ChartData.from_dict(d)
+
+
+def parse_json_relaxed(text: str) -> Any:
+    t = text.strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```(?:json)?\s*", "", t)
+        t = re.sub(r"\s*```$", "", t)
+    return json.loads(t)
+
+
+def _float_try(x: Any) -> Optional[float]:
+    if x is None or x == "":
+        return None
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_numbers_from_text(text: str) -> list[float]:
+    nums: list[float] = []
+    for m in re.finditer(r"-?\d+(?:\.\d+)?(?:e[-+]?\d+)?", text, re.I):
+        try:
+            nums.append(float(m.group(0)))
+        except ValueError:
+            pass
+    return nums
+
+
+def values_from_data_series(series: list[dict[str, Any]]) -> list[float]:
+    out: list[float] = []
+    keys = (
+        "median",
+        "mean",
+        "value",
+        "range_low",
+        "range_high",
+        "point_estimate",
+        "lower_ci",
+        "upper_ci",
+    )
+    for row in series:
+        for k in keys:
+            v = _float_try(row.get(k))
+            if v is not None:
+                out.append(v)
+    return out
+
+
+def detect_document_chart_conflicts(
+    chart: ChartData,
+    document_text: str,
+    rtol: float = 0.02,
+    atol: float = 1e-6,
+) -> list[dict[str, Any]]:
+    """Heuristic: numbers in chart series not matching any number in source text."""
+    doc_nums = extract_numbers_from_text(document_text)
+    if not doc_nums:
+        return []
+    conflicts: list[dict[str, Any]] = []
+    for i, row in enumerate(chart.data_series):
+        for key in (
+            "median",
+            "mean",
+            "value",
+            "range_low",
+            "range_high",
+            "point_estimate",
+            "lower_ci",
+            "upper_ci",
+        ):
+            v = _float_try(row.get(key))
+            if v is None:
+                continue
+            matched = any(abs(v - d) <= atol + rtol * max(abs(v), abs(d)) for d in doc_nums)
+            if not matched:
+                conflicts.append(
+                    {
+                        "field": f"data_series[{i}].{key}",
+                        "chart_image_value": str(v),
+                        "document_value": "(no close match in uploaded text — confirm manually)",
+                        "required_action": "user_select_or_edit",
+                    }
+                )
+    # Reverse check: prominent doc numbers missing from chart (optional warning)
+    # Reverse direction omitted: document text includes years/sample sizes that are not chart labels.
+
+    # Dedupe by field + values
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[dict[str, Any]] = []
+    for c in conflicts:
+        sig = (c["field"], str(c.get("document_value")), str(c.get("chart_image_value")))
+        if sig in seen:
+            continue
+        seen.add(sig)
+        unique.append(c)
+    return unique[:25]
+
+
+def merge_extraction_into_chart(raw: dict[str, Any], existing: ChartData) -> None:
+    existing.chart_type = str(raw.get("chart_type") or existing.chart_type)
+    existing.title = str(raw.get("title") or existing.title)
+    existing.axis_labels = dict(raw.get("axis_labels") or existing.axis_labels)
+    existing.axis_units = dict(raw.get("axis_units") or existing.axis_units)
+    existing.category_labels = list(raw.get("category_labels") or [])
+    existing.legend_labels = list(raw.get("legend_labels") or [])
+    ds = raw.get("data_series")
+    if isinstance(ds, list):
+        existing.data_series = [dict(r) for r in ds if isinstance(r, dict)]
+    existing.footnotes = list(raw.get("footnotes") or [])
+    existing.source_citation = str(raw.get("source_citation") or "")
+    cl = raw.get("confidence_level")
+    if isinstance(cl, dict):
+        existing.confidence_level = {str(k): str(v) for k, v in cl.items()}
+    ew = raw.get("extraction_warnings")
+    if isinstance(ew, list):
+        existing.extraction_warnings = [str(x) for x in ew]
+    existing.low_confidence_fields = [
+        k for k, v in existing.confidence_level.items() if str(v).lower() == "low"
+    ]
+    if str(raw.get("suggested_chart_render") or "") == "dot_and_range":
+        if "box" in existing.chart_type.lower():
+            existing.extraction_warnings.append(
+                "Box plots and whiskers are not allowed with median+IQR-only data — use dot-and-range."
+            )
+
+
+def gpt4o_extract_chart_from_image(
+    client: OpenAI | AzureOpenAI,
+    image_bytes: bytes,
+    mime_type: str,
+    vision_model: str,
+    extra_context: str = "",
+) -> dict[str, Any]:
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    data_url = f"data:{mime_type};base64,{b64}"
+    user_text = (
+        "Extract the chart faithfully into JSON per schema. "
+        "Flag unreadable elements with low confidence."
+    )
+    if extra_context.strip():
+        user_text += "\n\nSource document excerpt for cross-check:\n" + extra_context[:6000]
+    resp = client.chat.completions.create(
+        model=vision_model,
+        messages=[
+            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ],
+        temperature=0.1,
+        max_tokens=4096,
+    )
+    content = (resp.choices[0].message.content or "").strip()
+    return parse_json_relaxed(content)
+
+
+def parse_csv_to_data_series(file_bytes: bytes) -> list[dict[str, Any]]:
+    text = file_bytes.decode("utf-8", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    rows: list[dict[str, Any]] = []
+    for row in reader:
+        clean = {k.strip(): (v.strip() if isinstance(v, str) else v) for k, v in row.items() if k}
+        if any(clean.values()):
+            rows.append(clean)
+    return rows
+
+
+def parse_json_data_file(file_bytes: bytes) -> list[dict[str, Any]]:
+    data = json.loads(file_bytes.decode("utf-8", errors="replace"))
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        if isinstance(data.get("data_series"), list):
+            return [x for x in data["data_series"] if isinstance(x, dict)]
+        if isinstance(data.get("series"), list):
+            return [x for x in data["series"] if isinstance(x, dict)]
+        return [data]
+    return []
+
+
+def parse_xlsx_to_data_series(file_bytes: bytes) -> list[dict[str, Any]]:
+    try:
+        import openpyxl
+    except ImportError:
+        return []
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    ws = wb.active
+    rows_iter = ws.iter_rows(values_only=True)
+    header = next(rows_iter, None)
+    if not header:
+        return []
+    headers = [str(h or "").strip() for h in header]
+    out: list[dict[str, Any]] = []
+    for row in rows_iter:
+        if row is None:
+            continue
+        d: dict[str, Any] = {}
+        for i, h in enumerate(headers):
+            if not h:
+                continue
+            if i < len(row) and row[i] is not None:
+                d[h] = row[i]
+        if d:
+            out.append(d)
+    return out
+
+
+def median_iqr_data_sufficiency_warning(chart: ChartData) -> list[str]:
+    warns: list[str] = []
+    ct = chart.chart_type.lower()
+    if any(x in ct for x in ("box", "forest", "whisker")):
+        for row in chart.data_series:
+            has_m = _float_try(row.get("median")) is not None
+            has_r = (
+                _float_try(row.get("range_low")) is not None
+                and _float_try(row.get("range_high")) is not None
+            )
+            if has_m and has_r:
+                warns.append(
+                    "Box plots and whiskers are not allowed with this data — use dot-and-range with exact median and IQR range only."
+                )
+                break
+    return warns
+
+
+def format_verified_charts_for_prompt(charts: list[dict[str, Any]]) -> str:
+    """SPEC §19j — only verified or placeholder_approved charts contribute."""
+    blocks: list[str] = []
+    for c in charts:
+        st = c.get("verification_status", "")
+        if st == "removed":
+            continue
+        if st not in ("verified", "placeholder_approved"):
+            continue
+        cd = chart_dict_to_dataclass(c)
+        mode_note = ""
+        if cd.chart_mode == "reference_only":
+            mode_note = " [REFERENCE-ONLY — non-exact visual inspiration; do not copy numbers unless listed below.]"
+        if st == "placeholder_approved":
+            blocks.append(
+                f"- PLACEHOLDER{mode_note}: {cd.placeholder_text or 'Exact values to be inserted from source figure/table'}"
+            )
+            continue
+        payload = {
+            "chart_type": cd.chart_type,
+            "title": cd.title,
+            "axis_labels": cd.axis_labels,
+            "axis_units": cd.axis_units,
+            "category_labels": cd.category_labels,
+            "legend_labels": cd.legend_labels,
+            "data_series": cd.data_series,
+            "footnotes": cd.footnotes,
+            "source_citation": cd.source_citation,
+            "chart_mode": cd.chart_mode,
+        }
+        blocks.append(json.dumps(payload, ensure_ascii=False, indent=2))
+    if not blocks:
+        return ""
+    return (
+        "CHART ACCURACY RULES: Use only the verified chart data below. Do not infer, estimate, "
+        "interpolate, or invent values. Do not add extra series, labels, axes, subgroups, "
+        "confidence intervals, or legends. If any value is missing, render the approved "
+        "placeholder text exactly. Preserve all numeric labels exactly.\n\n"
+        "[VERIFIED CHART DATA]:\n" + "\n\n".join(blocks)
+    )
+
+
+def chart_gate_blocks_generation(
+    includes_charts: bool,
+    charts: list[dict[str, Any]],
+) -> tuple[bool, str]:
+    if not includes_charts:
+        return False, ""
+    active = [c for c in charts if c.get("verification_status") != "removed"]
+    if not active:
+        return (
+            True,
+            "Chart workflow is on: add at least one chart (data, figure, or placeholder) or turn off "
+            "'includes charts'.",
+        )
+    for c in active:
+        if c.get("verification_status") in CHART_BLOCKING_STATUSES:
+            label = c.get("title") or c.get("chart_id")
+            return True, f"Chart '{label}' is not verified — complete verification or use placeholder/remove."
+    return False, ""
+
+
+def recompute_chart_status_after_change(c: dict[str, Any], document_text: str) -> None:
+    """Set needs_review / conflict_unresolved based on confidence and heuristic doc conflicts."""
+    cd = chart_dict_to_dataclass(c)
+    extra = detect_document_chart_conflicts(cd, document_text)
+    merged: list[dict[str, Any]] = list(c.get("conflicts") or [])
+    seen = {(x.get("field"), x.get("chart_image_value"), x.get("document_value")) for x in merged}
+    for ex in extra:
+        sig = (ex.get("field"), ex.get("chart_image_value"), ex.get("document_value"))
+        if sig not in seen:
+            seen.add(sig)
+            merged.append(ex)
+    c["conflicts"] = merged
+    if c.get("verification_status") in ("verified", "placeholder_approved", "removed"):
+        return
+    warns = median_iqr_data_sufficiency_warning(cd)
+    c["extraction_warnings"] = list(
+        dict.fromkeys((c.get("extraction_warnings") or []) + warns)
+    )
+    if merged:
+        c["verification_status"] = "conflict_unresolved"
+    elif c.get("low_confidence_fields"):
+        c["verification_status"] = "needs_review"
+    else:
+        c["verification_status"] = c.get("verification_status") or "unverified"
+
+
+def run_post_generation_chart_qa(
+    client: OpenAI | AzureOpenAI,
+    vision_model: str,
+    image_bytes: bytes,
+    verified_charts_block: str,
+) -> str:
+    """SPEC §19i — lightweight vision checklist vs verified chart object."""
+    if not verified_charts_block.strip():
+        return "No verified chart block was in the prompt — QA skipped."
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    prompt = (
+        "You verify an infographic image against the REQUIRED chart specification below.\n"
+        "Answer in plain bullet points: (1) Are all chart labels/values from the spec visible? "
+        "(2) Any extra numbers not in the spec? (3) Missing values? (4) Placeholder handling OK?\n"
+        "Be concise.\n\nREQUIRED:\n"
+        + verified_charts_block[:12000]
+    )
+    resp = client.chat.completions.create(
+        model=vision_model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    },
+                ],
+            }
+        ],
+        temperature=0.2,
+        max_tokens=1024,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+def log_chart_audit_trail(
+    session_id: str,
+    provider: str,
+    style_key: str,
+    audience: str,
+    entry: dict[str, Any],
+) -> None:
+    row = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "session_id": session_id,
+        "provider": provider,
+        "style": style_key,
+        "audience": audience,
+        "success": True,
+        "latency_ms": 0,
+        "event": "chart_audit_trail",
+        "chart_audit": entry,
+    }
     _audit_logger.info(json.dumps(row))
 
 
@@ -682,6 +1158,7 @@ def build_infographic_prompt(
     audience_key: str,
     refinement_notes: str,
     logo_instructions_extra: str,
+    verified_charts_block: str = "",
 ) -> str:
     style = STYLES.get(style_id, STYLES["uab-craft-handmade"])
     audience_key = audience_key if audience_key in AUDIENCE_GUIDANCE else "patient"
@@ -747,6 +1224,9 @@ def build_infographic_prompt(
 - All numeric labels, axis values, and legend entries must match the source EXACTLY.
 - Do NOT invent whiskers, quartile boundaries, outlier points, or any visual element not explicitly in the source.
 
+## Verified chart data (authoritative when present)
+{verified_charts_block if verified_charts_block.strip() else "[No verified chart object attached — follow Source Documents and explicit user numbers only; do not invent chart statistics.]"}
+
 ## Audience-Specific Guidelines
 {aud}
 
@@ -800,6 +1280,16 @@ def init_session_state() -> None:
         st.session_state.generation_history = []
     if "refinement_notes" not in st.session_state:
         st.session_state.refinement_notes = ""
+    if "charts" not in st.session_state:
+        st.session_state.charts = []
+    if "processed_chart_figure_sigs" not in st.session_state:
+        st.session_state.processed_chart_figure_sigs = set()
+    if "processed_data_file_sigs" not in st.session_state:
+        st.session_state.processed_data_file_sigs = set()
+    if "last_verified_charts_block" not in st.session_state:
+        st.session_state.last_verified_charts_block = ""
+    if "chart_extraction_nonce" not in st.session_state:
+        st.session_state.chart_extraction_nonce = 0
 
 
 def set_progress(
@@ -864,6 +1354,12 @@ def main() -> None:
                     key="openai_chat_model",
                     help="e.g. gpt-4o-mini",
                 )
+                st.text_input(
+                    "Vision model (chart extraction / QA)",
+                    value=os.environ.get("OPENAI_VISION_MODEL", OPENAI_DEFAULT_VISION_MODEL),
+                    key="openai_vision_model",
+                    help="Use a vision-capable model (e.g. gpt-4o)",
+                )
         else:
             with st.expander("🔷 Azure OpenAI", expanded=True):
                 st.text_input(
@@ -896,6 +1392,15 @@ def main() -> None:
                     value=os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini"),
                     key="azure_chat_model",
                     help="Azure deployment name for text cleanup",
+                )
+                st.text_input(
+                    "Vision deployment (chart extraction / QA)",
+                    value=os.environ.get(
+                        "AZURE_OPENAI_VISION_DEPLOYMENT",
+                        OPENAI_DEFAULT_VISION_MODEL,
+                    ),
+                    key="azure_vision_deployment",
+                    help="Deployment name for gpt-4o-class vision model",
                 )
 
         st.markdown("---")
@@ -1039,55 +1544,7 @@ def main() -> None:
         else:
             st.caption("Upload PDF, DOCX, or TXT to preview extracted text.")
 
-    st.markdown("---")
-    tentative_prompt = ""
-
-    logo_extra = ""
-    if resolve_logo_path():
-        logo_extra = (
-            "\n- Technical note for layout: Leave the bottom edge clear or use a plain white band; "
-            "the application may composite the approved logo file onto a white footer after generation.\n"
-        )
-
-    tentative_prompt = build_infographic_prompt(
-        selected_style_key if mode == "single" else list(STYLES.keys())[0],
-        sanitized_context,
-        [regex_cleanup_fallback(combined_docs)] if combined_docs else [],
-        audience,
-        st.session_state.get("refinement_notes", ""),
-        logo_extra,
-    )
-
-    with st.expander("View full prompt (audited locally only — never logged server-side)", expanded=False):
-        st.code(tentative_prompt[:12000] + ("\n...[truncated]..." if len(tentative_prompt) > 12000 else ""))
-
-    gen_disabled = (
-        not phi_ok
-        or bool(inj_flags)
-        or bool(file_issues)
-        or (mode == "compare" and len(set(compare_style_keys)) < 3)
-    )
-
-    if mode == "single":
-        generate_btn = st.button(
-            "🎨 Generate infographic",
-            type="primary",
-            use_container_width=True,
-            disabled=gen_disabled,
-        )
-    else:
-        generate_btn = st.button(
-            "🎨 Generate 3-way comparison",
-            type="primary",
-            use_container_width=True,
-            disabled=gen_disabled,
-        )
-
-    progress_bar = st.progress(0.0)
-    status_label = st.empty()
-    error_box = st.empty()
-
-    # ── CREDENTIALs + CLIENT ──
+    # ── API helpers (used by chart extraction + generation) ──
     def get_credentials() -> tuple[bool, str, Any, str, str]:
         if provider == "openai":
             api_key = st.session_state.get("openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
@@ -1118,6 +1575,17 @@ def main() -> None:
         client = make_client("azure", api_key, endpoint, api_version)
         return True, "", client, img_model, chat_model
 
+    def get_vision_model_name() -> str:
+        if provider == "openai":
+            return (
+                st.session_state.get("openai_vision_model", "").strip()
+                or os.environ.get("OPENAI_VISION_MODEL", OPENAI_DEFAULT_VISION_MODEL)
+            )
+        return (
+            st.session_state.get("azure_vision_deployment", "").strip()
+            or os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT", OPENAI_DEFAULT_VISION_MODEL)
+        )
+
     def run_cleanups(client: Any, chat_model: str) -> list[str]:
         cleaned: list[str] = []
         for name, raw in extracted_preview:
@@ -1127,6 +1595,443 @@ def main() -> None:
             set_progress(progress_bar, status_label, "Cleaning document text", 0.35)
             cleaned.append(clean_document_text_llm(client, provider, chat_model, c))
         return cleaned
+
+    # ── Chart accuracy inputs & verification (SPEC §19) ────────
+    st.markdown("### 📊 Chart accuracy inputs")
+    st.caption(
+        "Upload existing chart or figure (optional). This helps preserve structure, labels, and layout. "
+        "For best accuracy, also provide raw data or confirm extracted values before generation."
+    )
+    includes_charts_chk = st.checkbox(
+        "This infographic includes charts, statistics, confidence intervals, or numeric data "
+        "(verification workflow)",
+        key="infographic_includes_charts",
+        help="When enabled, generation is blocked until every chart is verified, placeholder-approved, or removed.",
+    )
+    chart_figures = st.file_uploader(
+        "Upload existing chart or figure",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        key="chart_figure_uploader",
+    )
+    chart_data_files = st.file_uploader(
+        "Upload raw data (CSV, XLSX, JSON)",
+        type=["csv", "xlsx", "json"],
+        accept_multiple_files=True,
+        key="chart_data_uploader",
+    )
+    chart_context_snippet = st.text_area(
+        "Optional: paste extra source text for extraction cross-check",
+        height=80,
+        key="chart_context_snippet",
+        help="Shown to the vision model when extracting from chart images.",
+    )
+    snippet_txt = chart_context_snippet.strip()
+    cross_text = (snippet_txt + "\n" + combined_docs).strip()
+
+    wf_charts_on = includes_charts_chk or bool(chart_figures) or bool(chart_data_files) or bool(
+        st.session_state.charts
+    )
+
+    fig_sigs: set[tuple[str, int]] = set(st.session_state.processed_chart_figure_sigs)
+    if chart_figures:
+        for f in chart_figures:
+            raw = f.getvalue()
+            nbytes = len(raw)
+            if nbytes > MAX_CHART_UPLOAD_BYTES:
+                st.error(f"`{f.name}` exceeds max upload size.")
+                continue
+            sig = (f.name, nbytes)
+            if sig in fig_sigs:
+                continue
+            fig_sigs.add(sig)
+            ext = Path(f.name).suffix.lower()
+            mime_map = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+            }
+            st.session_state.charts.append(
+                {
+                    "chart_id": new_chart_id(),
+                    "chart_type": "unknown",
+                    "title": Path(f.name).stem,
+                    "axis_labels": {},
+                    "axis_units": {},
+                    "category_labels": [],
+                    "legend_labels": [],
+                    "data_series": [],
+                    "footnotes": [],
+                    "source_citation": "",
+                    "verification_status": "unverified",
+                    "confidence_level": {},
+                    "data_source_types": ["chart_image"],
+                    "visual_reference": True,
+                    "chart_mode": "exact",
+                    "conflicts": [],
+                    "placeholder_text": "",
+                    "extraction_warnings": [],
+                    "source_file": f.name,
+                    "source_location": "",
+                    "low_confidence_fields": [],
+                    "_mime": mime_map.get(ext, "image/png"),
+                    "_bytes_b64": base64.b64encode(raw).decode("ascii"),
+                }
+            )
+    st.session_state.processed_chart_figure_sigs = fig_sigs
+
+    data_sigs: set[tuple[str, int]] = set(st.session_state.processed_data_file_sigs)
+    if chart_data_files:
+        for f in chart_data_files:
+            raw = f.getvalue()
+            nbytes = len(raw)
+            if nbytes > MAX_CHART_UPLOAD_BYTES:
+                st.error(f"`{f.name}` exceeds max upload size.")
+                continue
+            sig = (f.name, nbytes)
+            if sig in data_sigs:
+                continue
+            data_sigs.add(sig)
+            ext = Path(f.name).suffix.lower()
+            try:
+                if ext == ".csv":
+                    series = parse_csv_to_data_series(raw)
+                elif ext == ".json":
+                    series = parse_json_data_file(raw)
+                elif ext == ".xlsx":
+                    series = parse_xlsx_to_data_series(raw)
+                    if not series:
+                        st.warning("XLSX parse failed — install openpyxl or use CSV/JSON.")
+                else:
+                    series = []
+            except Exception as ex:
+                st.error(f"Could not parse `{f.name}`: {ex}")
+                series = []
+            dtype = ext.strip(".") or "file"
+            st.session_state.charts.append(
+                {
+                    "chart_id": new_chart_id(),
+                    "chart_type": "bar",
+                    "title": Path(f.name).stem,
+                    "axis_labels": {},
+                    "axis_units": {},
+                    "category_labels": [],
+                    "legend_labels": [],
+                    "data_series": series,
+                    "footnotes": [],
+                    "source_citation": "",
+                    "verification_status": "unverified",
+                    "confidence_level": {},
+                    "data_source_types": [dtype],
+                    "visual_reference": False,
+                    "chart_mode": "exact",
+                    "conflicts": [],
+                    "placeholder_text": "",
+                    "extraction_warnings": [],
+                    "source_file": f.name,
+                    "source_location": "",
+                    "low_confidence_fields": [],
+                }
+            )
+            c_last = st.session_state.charts[-1]
+            recompute_chart_status_after_change(c_last, cross_text)
+    st.session_state.processed_data_file_sigs = data_sigs
+
+    c1p, c2p, c3p = st.columns(3)
+    with c1p:
+        if st.button("➕ Add manual chart row (empty)", key="btn_add_manual_chart"):
+            st.session_state.charts.append(
+                {
+                    "chart_id": new_chart_id(),
+                    "chart_type": "manual",
+                    "title": "Manual entry",
+                    "axis_labels": {},
+                    "axis_units": {},
+                    "category_labels": [],
+                    "legend_labels": [],
+                    "data_series": [
+                        {"group": "", "value": "", "label": "", "unit": ""},
+                    ],
+                    "footnotes": [],
+                    "source_citation": "",
+                    "verification_status": "unverified",
+                    "confidence_level": {},
+                    "data_source_types": ["manual"],
+                    "visual_reference": False,
+                    "chart_mode": "exact",
+                    "conflicts": [],
+                    "placeholder_text": "",
+                    "extraction_warnings": [],
+                    "source_file": "",
+                    "source_location": "",
+                    "low_confidence_fields": [],
+                }
+            )
+            recompute_chart_status_after_change(st.session_state.charts[-1], cross_text)
+    with c2p:
+        if st.button("➕ Add placeholder chart", key="btn_add_placeholder_chart"):
+            st.session_state.charts.append(
+                {
+                    "chart_id": new_chart_id(),
+                    "chart_type": "placeholder",
+                    "title": "Approved placeholder",
+                    "axis_labels": {},
+                    "axis_units": {},
+                    "category_labels": [],
+                    "legend_labels": [],
+                    "data_series": [],
+                    "footnotes": [],
+                    "source_citation": "",
+                    "verification_status": "unverified",
+                    "confidence_level": {},
+                    "data_source_types": ["manual"],
+                    "visual_reference": False,
+                    "chart_mode": "exact",
+                    "conflicts": [],
+                    "placeholder_text": "Exact values to be inserted from [source figure/table]",
+                    "extraction_warnings": [],
+                    "source_file": "",
+                    "source_location": "",
+                    "low_confidence_fields": [],
+                }
+            )
+    with c3p:
+        if st.session_state.charts and st.button("🗑️ Clear all charts", key="btn_clear_charts"):
+            st.session_state.charts = []
+            st.session_state.processed_chart_figure_sigs = set()
+            st.session_state.processed_data_file_sigs = set()
+            st.rerun()
+
+    st.markdown("#### Verification")
+    for idx, chart in enumerate(list(st.session_state.charts)):
+        cid = chart.get("chart_id", f"idx_{idx}")
+        status = chart.get("verification_status", "unverified")
+        badge = {"verified": "✅ verified", "placeholder_approved": "✅ placeholder OK", "removed": "⛔ removed", "needs_review": "⚠️ needs review", "conflict_unresolved": "❌ conflict", "unverified": "⏳ unverified"}.get(
+            status, status
+        )
+        with st.expander(f"Chart {idx + 1}: {chart.get('title') or cid} — {badge}", expanded=(status not in ("verified", "placeholder_approved", "removed"))):
+            t1, t2 = st.columns(2)
+            with t1:
+                chart["title"] = st.text_input("Title", value=chart.get("title", ""), key=f"tit_{cid}")
+                chart["chart_type"] = st.text_input("Chart type", value=chart.get("chart_type", ""), key=f"ct_{cid}")
+            with t2:
+                chart["chart_mode"] = st.selectbox(
+                    "Chart mode",
+                    options=list(CHART_MODES),
+                    format_func=lambda m: {
+                        "exact": "Exact (default)",
+                        "style_transform": "Style transform (data locked)",
+                        "reference_only": "Reference-only (non-exact)",
+                    }[m],
+                    index=list(CHART_MODES).index(chart.get("chart_mode", "exact"))
+                    if chart.get("chart_mode") in CHART_MODES
+                    else 0,
+                    key=f"mode_{cid}",
+                )
+            chart["source_citation"] = st.text_input(
+                "Source citation", value=chart.get("source_citation", ""), key=f"src_{cid}"
+            )
+
+            ds_default = chart.get("data_series") or [{"group": "", "value": "", "label": "", "unit": ""}]
+            edited = st.data_editor(
+                pd.DataFrame(ds_default),
+                num_rows="dynamic",
+                key=f"de_{cid}",
+                use_container_width=True,
+            )
+            if len(edited):
+                chart["data_series"] = edited.to_dict(orient="records")
+
+            foot = "\n".join(chart.get("footnotes") or [])
+            nfoot = st.text_area("Footnotes (one per line)", value=foot, height=60, key=f"ft_{cid}")
+            chart["footnotes"] = [ln for ln in nfoot.splitlines() if ln.strip()]
+
+            if chart.get("_bytes_b64"):
+                st.caption("Figure upload — run extraction to populate fields from the image.")
+                ex_col = st.columns([1, 2])[0]
+                with ex_col:
+                    if st.button("Run GPT-4o extraction", key=f"ex_{cid}"):
+                        ok_e, err_e, client_e, _im, _cm = get_credentials()
+                        if not ok_e or client_e is None:
+                            st.error(err_e or "API not configured.")
+                        else:
+                            try:
+                                raw_b = base64.b64decode(chart["_bytes_b64"])
+                                mime = chart.get("_mime") or "image/png"
+                                extra = cross_text[:8000]
+                                if snippet_txt:
+                                    extra = snippet_txt[:8000]
+                                raw_j = gpt4o_extract_chart_from_image(
+                                    client_e, raw_b, mime, get_vision_model_name(), extra
+                                )
+                                cd = chart_dict_to_dataclass(chart)
+                                merge_extraction_into_chart(raw_j, cd)
+                                chart.update(cd.to_dict())
+                                chart["_bytes_b64"] = chart.get("_bytes_b64")
+                                chart["_mime"] = chart.get("_mime")
+                                recompute_chart_status_after_change(chart, cross_text)
+                                if chart.get("low_confidence_fields"):
+                                    chart["verification_status"] = "needs_review"
+                                st.session_state.chart_extraction_nonce += 1
+                                st.success("Extraction complete — review and confirm.")
+                                st.rerun()
+                            except Exception as ex:
+                                st.error(user_friendly_error(ex))
+
+            warns = chart.get("extraction_warnings") or []
+            lowc = chart.get("low_confidence_fields") or []
+            if warns or lowc:
+                st.warning(
+                    "Low confidence or warnings: "
+                    + "; ".join(warns)
+                    + (" | Fields: " + ", ".join(lowc) if lowc else "")
+                )
+
+            conf = chart.get("conflicts") or []
+            if conf:
+                st.error(
+                    "Possible conflict between chart values and source text — edit the data table "
+                    "to match your approved source, or document why values differ, then re-check."
+                )
+                for co in conf:
+                    st.markdown(
+                        f"- **{co.get('field')}** — document: `{co.get('document_value')}` vs chart: `{co.get('chart_image_value')}`"
+                    )
+                if st.button("Mark conflicts reviewed (I edited the data table)", key=f"cf_done_{cid}"):
+                    chart["conflicts"] = []
+                    chart["verification_status"] = "unverified"
+                    recompute_chart_status_after_change(chart, cross_text)
+                    st.rerun()
+
+            ph_cols = st.columns([2, 1])
+            with ph_cols[0]:
+                chart["placeholder_text"] = st.text_input(
+                    "Placeholder text (if using placeholder approval)",
+                    value=chart.get("placeholder_text", ""),
+                    key=f"pht_{cid}",
+                )
+            action_cols = st.columns(4)
+            with action_cols[0]:
+                if st.button("✓ Confirm chart data", key=f"vok_{cid}"):
+                    if chart.get("conflicts"):
+                        st.error("Resolve conflicts first (use Re-check after editing the table).")
+                    else:
+                        chart["verification_status"] = "verified"
+                        audit_entry = {
+                            "chart_id": chart.get("chart_id"),
+                            "source_file": chart.get("source_file"),
+                            "source_location": chart.get("source_location"),
+                            "source_type": "|".join(chart.get("data_source_types") or ["unknown"]),
+                            "verified_by_user": True,
+                            "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "final_chart_type": chart.get("chart_type"),
+                            "allowed_values_only": True,
+                            "conflicts_resolved": copy.deepcopy(chart.get("conflicts") or []),
+                        }
+                        log_chart_audit_trail(
+                            session_id,
+                            provider,
+                            selected_style_key if mode == "single" else "compare",
+                            audience,
+                            audit_entry,
+                        )
+                        audit_log(
+                            session_id,
+                            provider,
+                            selected_style_key if mode == "single" else "compare_run",
+                            audience,
+                            True,
+                            0,
+                            "chart_verified",
+                            {"chart_id": chart.get("chart_id")},
+                        )
+                        st.rerun()
+            with action_cols[1]:
+                if st.button("Placeholder OK", key=f"pok_{cid}"):
+                    chart["verification_status"] = "placeholder_approved"
+                    audit_entry = {
+                        "chart_id": chart.get("chart_id"),
+                        "source_file": chart.get("source_file"),
+                        "source_location": chart.get("source_location"),
+                        "source_type": "|".join(chart.get("data_source_types") or ["placeholder"]),
+                        "verified_by_user": True,
+                        "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "final_chart_type": "placeholder",
+                        "allowed_values_only": True,
+                        "conflicts_resolved": [],
+                    }
+                    log_chart_audit_trail(session_id, provider, selected_style_key, audience, audit_entry)
+                    st.rerun()
+            with action_cols[2]:
+                if st.button("Remove chart", key=f"rm_{cid}"):
+                    chart["verification_status"] = "removed"
+                    st.rerun()
+            with action_cols[3]:
+                if st.button("Re-check conflicts", key=f"rc_{cid}"):
+                    recompute_chart_status_after_change(chart, cross_text)
+                    st.rerun()
+
+    verified_charts_block = format_verified_charts_for_prompt(st.session_state.charts)
+
+    chart_blocked, chart_block_msg = chart_gate_blocks_generation(
+        wf_charts_on, st.session_state.charts
+    )
+    if wf_charts_on:
+        if chart_blocked:
+            st.error(f"Verification gate: {chart_block_msg}")
+        else:
+            st.success("Verification gate: all active charts are verified or placeholder-approved. ✅")
+
+    st.markdown("---")
+    tentative_prompt = ""
+
+    logo_extra = ""
+    if resolve_logo_path():
+        logo_extra = (
+            "\n- Technical note for layout: Leave the bottom edge clear or use a plain white band; "
+            "the application may composite the approved logo file onto a white footer after generation.\n"
+        )
+
+    tentative_prompt = build_infographic_prompt(
+        selected_style_key if mode == "single" else list(STYLES.keys())[0],
+        sanitized_context,
+        [regex_cleanup_fallback(combined_docs)] if combined_docs else [],
+        audience,
+        st.session_state.get("refinement_notes", ""),
+        logo_extra,
+        verified_charts_block=verified_charts_block,
+    )
+
+    with st.expander("View full prompt (audited locally only — never logged server-side)", expanded=False):
+        st.code(tentative_prompt[:12000] + ("\n...[truncated]..." if len(tentative_prompt) > 12000 else ""))
+
+    gen_disabled = (
+        not phi_ok
+        or bool(inj_flags)
+        or bool(file_issues)
+        or (mode == "compare" and len(set(compare_style_keys)) < 3)
+        or (wf_charts_on and chart_blocked)
+    )
+
+    if mode == "single":
+        generate_btn = st.button(
+            "🎨 Generate infographic",
+            type="primary",
+            use_container_width=True,
+            disabled=gen_disabled,
+        )
+    else:
+        generate_btn = st.button(
+            "🎨 Generate 3-way comparison",
+            type="primary",
+            use_container_width=True,
+            disabled=gen_disabled,
+        )
+
+    progress_bar = st.progress(0.0)
+    status_label = st.empty()
+    error_box = st.empty()
 
     if generate_btn:
         ok, err_msg, client, image_model, chat_model = get_credentials()
@@ -1147,6 +2052,9 @@ def main() -> None:
             results: list[dict[str, Any]] = []
             logo_file = resolve_logo_path()
 
+            gen_verified_block = format_verified_charts_for_prompt(st.session_state.charts)
+            st.session_state.last_verified_charts_block = gen_verified_block
+
             for si, style_id in enumerate(styles_to_run):
                 refinement = str(st.session_state.get("refinement_notes", "") or "")
                 prompt = build_infographic_prompt(
@@ -1156,6 +2064,7 @@ def main() -> None:
                     audience,
                     refinement,
                     logo_extra,
+                    verified_charts_block=gen_verified_block,
                 )
                 if mode == "single":
                     st.session_state.last_prompt = prompt
@@ -1256,6 +2165,34 @@ def main() -> None:
             use_container_width=True,
             key="dl_single",
         )
+        with st.expander("📋 Post-generation chart QA (vision check vs verified data)", expanded=False):
+            st.caption(
+                "Compares the generated image to the last verified chart block sent in the prompt (SPEC §19i)."
+            )
+            if st.button("Run automated QA", key="btn_post_gen_chart_qa"):
+                ok_q, err_q, client_q, _im_q, _cm_q = get_credentials()
+                if not ok_q or client_q is None:
+                    st.error(err_q or "Configure API keys for QA.")
+                else:
+                    try:
+                        qa_txt = run_post_generation_chart_qa(
+                            client_q,
+                            get_vision_model_name(),
+                            st.session_state.last_image_bytes,
+                            str(st.session_state.get("last_verified_charts_block", "") or ""),
+                        )
+                        st.markdown(qa_txt)
+                        audit_log(
+                            session_id,
+                            provider,
+                            selected_style_key,
+                            audience,
+                            True,
+                            0,
+                            "post_generation_chart_qa",
+                        )
+                    except BaseException as ex:
+                        st.error(user_friendly_error(ex))
         refinement = st.text_area(
             "Refinement notes (next generation)",
             key="refinement_loop_area",
