@@ -30,7 +30,9 @@ from uab_app.charts import (
     parse_csv_to_data_series,
     parse_json_data_file,
     parse_xlsx_to_data_series,
+    publication_reference_preflight_issues,
     refresh_chart_reference_hints,
+    run_publication_fidelity_qa,
     run_post_generation_chart_qa,
 )
 from uab_app.cleanup import cache_key_for_raw, clean_document_text_llm
@@ -146,6 +148,10 @@ def init_session_state() -> None:
         st.session_state.chart_extraction_nonce = 0
     if "cleaned_docs_cache" not in st.session_state:
         st.session_state.cleaned_docs_cache = {}
+    if "last_fidelity_qa_result" not in st.session_state:
+        st.session_state.last_fidelity_qa_result = None
+    if "last_fidelity_qa_pass" not in st.session_state:
+        st.session_state.last_fidelity_qa_pass = False
 
 
 def set_progress(
@@ -156,7 +162,7 @@ def set_progress(
 ) -> None:
     progress_bar.progress(min(1.0, max(0.0, frac)))
     status_text.markdown(
-        "**Progress:** Building prompt → Cleaning document text → Submitting to API "
+        "**Progress:** Cleaning document text → Building prompt → Submitting to API "
         "→ Fetching image → Displaying  \n"
         f"**Current:** {stage}"
     )
@@ -329,6 +335,26 @@ def main() -> None:
             help="1792x1024 = 16:9 (recommended for infographics) | 2K (2560x1440) is supported but flagged as experimental by OpenAI — results may be more variable above this resolution",
         )
         quality = st.selectbox("Quality", options=["high", "medium"], index=0, key="img_quality")
+        publication_fidelity_mode = st.checkbox(
+            "Publication fidelity mode (strict chart/text/citation QA before download)",
+            value=False,
+            key="publication_fidelity_mode",
+        )
+        expected_citation = ""
+        preferred_terms: list[str] = []
+        if publication_fidelity_mode:
+            expected_citation = st.text_input(
+                "Expected citation text (optional)",
+                value="",
+                key="expected_citation_text",
+                placeholder="e.g. JACC: Heart Failure. 2026;14(2):102686. doi:10.1016/j.jchf.2025.102686",
+            )
+            terms_raw = st.text_input(
+                "Preferred terminology (comma-separated)",
+                value="Prediabetes,myocardial infarction",
+                key="preferred_terms_text",
+            )
+            preferred_terms = [x.strip() for x in terms_raw.split(",") if x.strip()]
 
         compare_style_keys: list[str] = []
         if mode == "compare":
@@ -855,6 +881,11 @@ def main() -> None:
                         st.rerun()
 
     chart_reference_block = format_chart_reference_for_prompt(st.session_state.charts)
+    fidelity_preflight = publication_reference_preflight_issues(st.session_state.charts)
+    if publication_fidelity_mode and fidelity_preflight:
+        st.error("Publication fidelity preflight checks failed:")
+        for item in fidelity_preflight:
+            st.markdown(f"- {item}")
 
     st.markdown("---")
     tentative_prompt = ""
@@ -877,6 +908,11 @@ def main() -> None:
     )
 
     with st.expander("View full prompt (audited locally only — never logged server-side)", expanded=False):
+        st.caption(
+            "This preview uses **regex cleanup** on uploaded documents. On **Generate**, the app runs "
+            "**LLM document cleanup first**, then builds the prompt — so live prompts can differ slightly "
+            "from this preview when files are attached."
+        )
         st.code(tentative_prompt[:12000] + ("\n...[truncated]..." if len(tentative_prompt) > 12000 else ""))
 
     gen_disabled = (
@@ -884,6 +920,7 @@ def main() -> None:
         or bool(inj_rule_ids)
         or bool(file_issues)
         or (mode == "compare" and len(set(compare_style_keys)) < 3)
+        or (publication_fidelity_mode and bool(fidelity_preflight))
     )
 
     if mode == "single":
@@ -915,14 +952,16 @@ def main() -> None:
 
         t0 = time.perf_counter()
         try:
-            set_progress(progress_bar, status_label, "Building prompt", 0.1)
             cleanup_notes: list[str] = []
             if extracted_preview:
+                set_progress(progress_bar, status_label, "Cleaning document text", 0.12)
                 cleaned_docs, cleanup_notes = run_cleanups(client, chat_model)
             else:
                 cleaned_docs = []
             for line in cleanup_notes:
                 st.info(line)
+
+            set_progress(progress_bar, status_label, "Building prompt", 0.45)
 
             styles_to_run = (
                 [selected_style_key] if mode == "single" else compare_style_keys
@@ -1070,6 +1109,8 @@ def main() -> None:
 
             if mode == "single" and results:
                 st.session_state.last_image_bytes = results[0]["bytes"]
+                st.session_state.last_fidelity_qa_pass = False
+                st.session_state.last_fidelity_qa_result = None
                 st.session_state.generation_history.append(
                     {
                         "thumb_bytes": results[0]["bytes"],
@@ -1103,6 +1144,13 @@ def main() -> None:
     if st.session_state.last_image_bytes and mode == "single":
         st.markdown("### 🖼️ Latest infographic")
         st.image(st.session_state.last_image_bytes, use_container_width=True)
+        dl_disabled = publication_fidelity_mode and not bool(
+            st.session_state.get("last_fidelity_qa_pass", False)
+        )
+        if dl_disabled:
+            st.warning(
+                "Publication fidelity mode is enabled. Run chart review and get a PASS before download."
+            )
         st.download_button(
             "📥 Download PNG",
             data=st.session_state.last_image_bytes,
@@ -1110,6 +1158,7 @@ def main() -> None:
             mime="image/png",
             use_container_width=True,
             key="dl_single",
+            disabled=dl_disabled,
         )
         with st.expander("📋 Review charts in the generated image (vision QA)", expanded=True):
             has_ref = bool(str(st.session_state.get("last_chart_reference_block", "") or "").strip())
@@ -1136,13 +1185,30 @@ def main() -> None:
                     st.error(err_q or "Configure API keys for QA.")
                 else:
                     try:
-                        qa_txt = run_post_generation_chart_qa(
-                            client_q,
-                            get_vision_model_name(),
-                            st.session_state.last_image_bytes,
-                            str(st.session_state.get("last_chart_reference_block", "") or ""),
-                        )
-                        st.markdown(qa_txt)
+                        if publication_fidelity_mode:
+                            qa_obj = run_publication_fidelity_qa(
+                                client_q,
+                                get_vision_model_name(),
+                                st.session_state.last_image_bytes,
+                                str(st.session_state.get("last_chart_reference_block", "") or ""),
+                                preferred_terms,
+                                expected_citation,
+                            )
+                            st.session_state.last_fidelity_qa_result = qa_obj
+                            st.session_state.last_fidelity_qa_pass = bool(qa_obj.get("pass", False))
+                            if st.session_state.last_fidelity_qa_pass:
+                                st.success("Publication fidelity QA: PASS")
+                            else:
+                                st.error("Publication fidelity QA: FAIL")
+                            st.json(qa_obj)
+                        else:
+                            qa_txt = run_post_generation_chart_qa(
+                                client_q,
+                                get_vision_model_name(),
+                                st.session_state.last_image_bytes,
+                                str(st.session_state.get("last_chart_reference_block", "") or ""),
+                            )
+                            st.markdown(qa_txt)
                         audit_log(
                             session_id,
                             provider,
@@ -1154,6 +1220,9 @@ def main() -> None:
                         )
                     except BaseException as ex:
                         st.error(user_friendly_error(ex))
+            if publication_fidelity_mode and st.session_state.get("last_fidelity_qa_result") is not None:
+                st.caption("Latest publication-fidelity result")
+                st.json(st.session_state.last_fidelity_qa_result)
         refinement = st.text_area(
             "Refinement notes (next generation)",
             key="refinement_loop_area",

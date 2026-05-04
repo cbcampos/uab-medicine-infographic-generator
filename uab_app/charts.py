@@ -364,6 +364,50 @@ def format_chart_reference_for_prompt(charts: list[dict[str, Any]]) -> str:
     )
 
 
+def publication_reference_preflight_issues(charts: list[dict[str, Any]]) -> list[str]:
+    """Deterministic checks before generation for publication-fidelity mode."""
+    issues: list[str] = []
+    for c in charts:
+        if c.get("verification_status") == "removed":
+            continue
+        title = str(c.get("title") or c.get("chart_id") or "chart")
+        ct = str(c.get("chart_type") or "").lower()
+        rows = c.get("data_series") or []
+        if not isinstance(rows, list):
+            rows = []
+
+        is_hr_chart = any(x in ct for x in ("hazard", "forest", "hr"))
+        if is_hr_chart and rows:
+            has_n = any(str(r.get("n", "")).strip() for r in rows if isinstance(r, dict))
+            has_events = any(str(r.get("events", "")).strip() for r in rows if isinstance(r, dict))
+            has_hr = any(
+                str(r.get("point_estimate", "")).strip()
+                or str(r.get("hr", "")).strip()
+                or str(r.get("value", "")).strip()
+                for r in rows
+                if isinstance(r, dict)
+            )
+            has_ci = any(
+                (str(r.get("lower_ci", "")).strip() and str(r.get("upper_ci", "")).strip())
+                or (
+                    str(r.get("range_type", "")).strip().lower() == "ci"
+                    and str(r.get("range_low", "")).strip()
+                    and str(r.get("range_high", "")).strip()
+                )
+                for r in rows
+                if isinstance(r, dict)
+            )
+            if not has_events:
+                issues.append(f"{title}: HR-style chart is missing `Events` column in reference data.")
+            if not has_n:
+                issues.append(f"{title}: HR-style chart is missing `N` column in reference data.")
+            if not has_hr:
+                issues.append(f"{title}: HR-style chart is missing HR/point-estimate values.")
+            if not has_ci:
+                issues.append(f"{title}: HR-style chart is missing confidence interval bounds.")
+    return issues
+
+
 def refresh_chart_reference_hints(
     c: dict[str, Any],
     document_text: str,
@@ -441,3 +485,76 @@ def run_post_generation_chart_qa(
         max_tokens=1024,
     )
     return (resp.choices[0].message.content or "").strip()
+
+
+def run_publication_fidelity_qa(
+    client: OpenAI | AzureOpenAI,
+    vision_model: str,
+    image_bytes: bytes,
+    chart_reference_block: str,
+    expected_terms: list[str],
+    expected_citation: str,
+) -> dict[str, Any]:
+    """Structured pass/fail QA for publication-fidelity mode."""
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    term_hint = ", ".join([t for t in expected_terms if t.strip()]) or "[none specified]"
+    citation_hint = expected_citation.strip() or "[none specified]"
+    prompt = (
+        "Review the generated infographic for publication fidelity.\n"
+        "Return ONLY valid JSON, no markdown, using this schema:\n"
+        "{\n"
+        '  "pass": boolean,\n'
+        '  "critical_issues": [string],\n'
+        '  "minor_issues": [string],\n'
+        '  "checks": {\n'
+        '    "required_columns_present": "pass|fail|unknown",\n'
+        '    "axis_range_matches_reference": "pass|fail|unknown",\n'
+        '    "terminology_consistency": "pass|fail|unknown",\n'
+        '    "typo_scan": "pass|fail|unknown",\n'
+        '    "citation_quality": "pass|fail|unknown",\n'
+        '    "placeholder_tokens_absent": "pass|fail|unknown"\n'
+        "  },\n"
+        '  "recommendation": string\n'
+        "}\n\n"
+        "Mark `pass=false` if any critical issue exists.\n"
+        "Detect placeholder tokens like xxx-xxx, TBD, [source], lorem.\n"
+        f"Preferred terminology: {term_hint}\n"
+        f"Expected citation if available: {citation_hint}\n\n"
+        "[USER CHART REFERENCE]:\n"
+        + (chart_reference_block[:12000] if chart_reference_block.strip() else "[none]")
+    )
+    resp = client.chat.completions.create(
+        model=vision_model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{b64}"},
+                    },
+                ],
+            }
+        ],
+        temperature=0.1,
+        max_tokens=1200,
+    )
+    content = (resp.choices[0].message.content or "").strip()
+    parsed = parse_json_relaxed(content)
+    if isinstance(parsed, dict) and "pass" in parsed:
+        return parsed
+    return {
+        "pass": False,
+        "critical_issues": ["Could not parse structured QA response."],
+        "minor_issues": [],
+        "checks": {
+            "required_columns_present": "unknown",
+            "axis_range_matches_reference": "unknown",
+            "terminology_consistency": "unknown",
+            "typo_scan": "unknown",
+            "citation_quality": "unknown",
+            "placeholder_tokens_absent": "unknown",
+        },
+        "recommendation": "Re-run QA or regenerate.",
+    }
