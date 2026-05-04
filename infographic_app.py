@@ -1236,7 +1236,11 @@ def main() -> None:
             height=90,
             placeholder="e.g. Emphasize the screening workflow; enlarge the headline.",
         )
-        if st.button("🔁 Regenerate with refinement", key="btn_refine"):
+        if st.button(
+            "🔁 Save refinement notes and prepare next run",
+            key="btn_refine",
+            help="Applies your notes to the next prompt. Click “Generate infographic” again.",
+        ):
             st.session_state.refinement_notes = refinement
             st.rerun()
 
