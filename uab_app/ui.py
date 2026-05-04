@@ -39,6 +39,9 @@ from uab_app.cleanup import cache_key_for_raw, clean_document_text_llm
 from uab_app.constants import (
     ALLOWED_UPLOAD_EXTENSIONS,
     CHART_MODES,
+    GEMINI_DEFAULT_CHAT_MODEL,
+    GEMINI_DEFAULT_IMAGE_MODEL,
+    GEMINI_DEFAULT_VISION_MODEL,
     MAX_CHART_UPLOAD_BYTES,
     MAX_UPLOAD_BYTES,
     OPENAI_DEFAULT_CHAT_MODEL,
@@ -183,7 +186,7 @@ def main() -> None:
         "<h1 style='color:white;margin:0;font-family:Source Sans Pro,sans-serif'>"
         "🖼️ Infographic Generator</h1>"
         "<p style='color:#FFC72C;margin:4px 0 0;font-size:14px'>"
-        "GPT Image 2.0 · OpenAI or Azure"
+        "Image generation via OpenAI, Azure OpenAI, or Gemini"
         "</p></div>",
         unsafe_allow_html=True,
     )
@@ -192,9 +195,11 @@ def main() -> None:
         st.markdown("### ⚙️ API Configuration")
         provider = st.radio(
             "Provider",
-            options=["openai", "azure"],
+            options=["openai", "azure", "gemini"],
             format_func=lambda p: (
-                "🟢 OpenAI (GPT Image 2)" if p == "openai" else "🔷 Azure OpenAI (GPT Image 2)"
+                "🟢 OpenAI (GPT Image 2)"
+                if p == "openai"
+                else ("🔷 Azure OpenAI (GPT Image 2)" if p == "azure" else "🟣 Gemini")
             ),
             index=0,
             horizontal=False,
@@ -228,7 +233,7 @@ def main() -> None:
                     key="openai_image_model",
                     help="Must match an image-capable model available to your API key (e.g. gpt-image-2).",
                 )
-        else:
+        elif provider == "azure":
             with st.expander("🔷 Azure OpenAI", expanded=True):
                 st.text_input(
                     "API Key",
@@ -269,6 +274,32 @@ def main() -> None:
                     ),
                     key="azure_vision_deployment",
                     help="Deployment name for gpt-4o-class vision model",
+                )
+        else:
+            with st.expander("🟣 Gemini", expanded=True):
+                st.text_input(
+                    "API Key",
+                    value=os.environ.get("GEMINI_API_KEY", ""),
+                    key="gemini_api_key",
+                    type="password",
+                )
+                st.text_input(
+                    "Chat model (document cleanup)",
+                    value=os.environ.get("GEMINI_CHAT_MODEL", GEMINI_DEFAULT_CHAT_MODEL),
+                    key="gemini_chat_model",
+                    help="e.g. gemini-2.5-pro",
+                )
+                st.text_input(
+                    "Vision model (chart extraction / QA)",
+                    value=os.environ.get("GEMINI_VISION_MODEL", GEMINI_DEFAULT_VISION_MODEL),
+                    key="gemini_vision_model",
+                    help="Vision-capable Gemini model, e.g. gemini-2.5-pro",
+                )
+                st.text_input(
+                    "Image model",
+                    value=os.environ.get("GEMINI_IMAGE_MODEL", GEMINI_DEFAULT_IMAGE_MODEL),
+                    key="gemini_image_model",
+                    help="Use your image-capable Gemini model (default: nano-banana-pro).",
                 )
 
         st.markdown("---")
@@ -434,40 +465,6 @@ def main() -> None:
         else:
             st.caption("Upload PDF, DOCX, or TXT to preview extracted text.")
 
-    has_chart_inputs = bool(st.session_state.charts or chart_figures or chart_data_files)
-    step_context_ready = bool(sanitized_context.strip() or extracted_preview)
-    step_refs_ready = has_chart_inputs
-    step_generate_ready = bool(phi_ok and not inj_rule_ids and not file_issues)
-    st.markdown("### Quick start")
-    q1, q2, q3 = st.columns(3)
-    with q1:
-        st.markdown(
-            (
-                "✅ **Step 1: Add topic context**\n\n"
-                "Describe the topic and/or upload source docs."
-            )
-            if step_context_ready
-            else "⬜ **Step 1: Add topic context**\n\nAdd context text or upload at least one source document."
-        )
-    with q2:
-        st.markdown(
-            (
-                "✅ **Step 2: Add chart references (optional)**\n\n"
-                "You have at least one uploaded or manual reference entry."
-            )
-            if step_refs_ready
-            else "⬜ **Step 2: Add chart references (optional)**\n\nSkip if not needed, or add a chart/file/manual row."
-        )
-    with q3:
-        st.markdown(
-            (
-                "✅ **Step 3: Ready to generate**\n\n"
-                "Safety checks are currently passing."
-            )
-            if step_generate_ready
-            else "⬜ **Step 3: Ready to generate**\n\nConfirm PHI checkbox and clear any warnings first."
-        )
-
     # ── API helpers (used by chart extraction + generation) ──
     def get_credentials() -> tuple[bool, str, Any, str, str]:
         if provider == "openai":
@@ -484,24 +481,36 @@ def main() -> None:
                 return False, "OpenAI API key is required.", None, "", chat_model
             client = make_client("openai", api_key, None, None)
             return True, "", client, img_model, chat_model
-        api_key = st.session_state.get("azure_api_key", "") or os.environ.get(
-            "AZURE_OPENAI_API_KEY", ""
+        if provider == "azure":
+            api_key = st.session_state.get("azure_api_key", "") or os.environ.get(
+                "AZURE_OPENAI_API_KEY", ""
+            )
+            endpoint = st.session_state.get("azure_endpoint", "") or os.environ.get(
+                "AZURE_OPENAI_ENDPOINT", ""
+            )
+            api_version = st.session_state.get("azure_api_version", "") or os.environ.get(
+                "AZURE_OPENAI_API_VERSION", "2024-12-01-preview"
+            )
+            img_model = st.session_state.get("azure_image_model", "") or os.environ.get(
+                "AZURE_OPENAI_IMAGE_MODEL", "gpt-image-2"
+            )
+            chat_model = st.session_state.get("azure_chat_model", "") or os.environ.get(
+                "AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini"
+            )
+            if not api_key or not endpoint:
+                return False, "Azure API key and endpoint are required.", None, "", chat_model
+            client = make_client("azure", api_key, endpoint, api_version)
+            return True, "", client, img_model, chat_model
+        api_key = st.session_state.get("gemini_api_key", "") or os.environ.get("GEMINI_API_KEY", "")
+        img_model = st.session_state.get("gemini_image_model", "").strip() or os.environ.get(
+            "GEMINI_IMAGE_MODEL", GEMINI_DEFAULT_IMAGE_MODEL
         )
-        endpoint = st.session_state.get("azure_endpoint", "") or os.environ.get(
-            "AZURE_OPENAI_ENDPOINT", ""
+        chat_model = st.session_state.get("gemini_chat_model", "").strip() or os.environ.get(
+            "GEMINI_CHAT_MODEL", GEMINI_DEFAULT_CHAT_MODEL
         )
-        api_version = st.session_state.get("azure_api_version", "") or os.environ.get(
-            "AZURE_OPENAI_API_VERSION", "2024-12-01-preview"
-        )
-        img_model = st.session_state.get("azure_image_model", "") or os.environ.get(
-            "AZURE_OPENAI_IMAGE_MODEL", "gpt-image-2"
-        )
-        chat_model = st.session_state.get("azure_chat_model", "") or os.environ.get(
-            "AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini"
-        )
-        if not api_key or not endpoint:
-            return False, "Azure API key and endpoint are required.", None, "", chat_model
-        client = make_client("azure", api_key, endpoint, api_version)
+        if not api_key:
+            return False, "Gemini API key is required.", None, "", chat_model
+        client = make_client("gemini", api_key, None, None)
         return True, "", client, img_model, chat_model
 
     def get_vision_model_name() -> str:
@@ -510,9 +519,14 @@ def main() -> None:
                 st.session_state.get("openai_vision_model", "").strip()
                 or os.environ.get("OPENAI_VISION_MODEL", OPENAI_DEFAULT_VISION_MODEL)
             )
+        if provider == "azure":
+            return (
+                st.session_state.get("azure_vision_deployment", "").strip()
+                or os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT", OPENAI_DEFAULT_VISION_MODEL)
+            )
         return (
-            st.session_state.get("azure_vision_deployment", "").strip()
-            or os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT", OPENAI_DEFAULT_VISION_MODEL)
+            st.session_state.get("gemini_vision_model", "").strip()
+            or os.environ.get("GEMINI_VISION_MODEL", GEMINI_DEFAULT_VISION_MODEL)
         )
 
     def run_cleanups(client: Any, chat_model: str) -> tuple[list[str], list[str]]:
@@ -557,6 +571,39 @@ def main() -> None:
         accept_multiple_files=True,
         key="chart_data_uploader",
     )
+    has_chart_inputs = bool(st.session_state.charts or chart_figures or chart_data_files)
+    step_context_ready = bool(sanitized_context.strip() or extracted_preview)
+    step_refs_ready = has_chart_inputs
+    step_generate_ready = bool(phi_ok and not inj_rule_ids and not file_issues)
+    st.markdown("### Quick start")
+    q1, q2, q3 = st.columns(3)
+    with q1:
+        st.markdown(
+            (
+                "✅ **Step 1: Add topic context**\n\n"
+                "Describe the topic and/or upload source docs."
+            )
+            if step_context_ready
+            else "⬜ **Step 1: Add topic context**\n\nAdd context text or upload at least one source document."
+        )
+    with q2:
+        st.markdown(
+            (
+                "✅ **Step 2: Add chart references (optional)**\n\n"
+                "You have at least one uploaded or manual reference entry."
+            )
+            if step_refs_ready
+            else "⬜ **Step 2: Add chart references (optional)**\n\nSkip if not needed, or add a chart/file/manual row."
+        )
+    with q3:
+        st.markdown(
+            (
+                "✅ **Step 3: Ready to generate**\n\n"
+                "Safety checks are currently passing."
+            )
+            if step_generate_ready
+            else "⬜ **Step 3: Ready to generate**\n\nConfirm PHI checkbox and clear any warnings first."
+        )
     chart_context_snippet = st.text_area(
         "Optional: paste extra source text to help extraction",
         height=80,
@@ -998,11 +1045,15 @@ def main() -> None:
         key_val = st.session_state.get("openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
         if not key_val:
             credential_issue = "OpenAI API key is missing."
-    else:
+    elif provider == "azure":
         key_val = st.session_state.get("azure_api_key", "") or os.environ.get("AZURE_OPENAI_API_KEY", "")
         endpoint_val = st.session_state.get("azure_endpoint", "") or os.environ.get("AZURE_OPENAI_ENDPOINT", "")
         if not key_val or not endpoint_val:
             credential_issue = "Azure API key and endpoint are required."
+    else:
+        key_val = st.session_state.get("gemini_api_key", "") or os.environ.get("GEMINI_API_KEY", "")
+        if not key_val:
+            credential_issue = "Gemini API key is missing."
 
     readiness_issues: list[str] = []
     if not step_context_ready:

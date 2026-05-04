@@ -1,9 +1,10 @@
-"""OpenAI/Azure clients, image generation, fetch, and logo compositing."""
+"""OpenAI/Azure/Gemini clients, image generation, fetch, and logo compositing."""
 
 from __future__ import annotations
 
 import base64
 import io
+import json
 import os
 import time
 import urllib.request
@@ -15,6 +16,7 @@ from PIL import Image
 
 from uab_app.constants import (
     BACKOFF_BASE_S,
+    GEMINI_OPENAI_BASE_URL,
     IMAGE_GEN_TIMEOUT_S,
     MAX_GENERATION_ATTEMPTS,
 )
@@ -43,6 +45,14 @@ def make_client(
     timeout = float(IMAGE_GEN_TIMEOUT_S)
     if provider == "openai":
         return OpenAI(api_key=api_key, timeout=timeout)
+    if provider == "gemini":
+        c = OpenAI(
+            api_key=api_key,
+            base_url=GEMINI_OPENAI_BASE_URL,
+            timeout=timeout,
+        )
+        setattr(c, "_gemini_api_key", api_key)
+        return c
     return AzureOpenAI(
         api_key=api_key,
         api_version=api_version or "2024-12-01-preview",
@@ -73,7 +83,7 @@ def generate_image(
             quality=quality,
             n=n,
         )
-    else:
+    elif provider == "azure":
         resp = client.images.generate(
             model=model,
             prompt=prompt,
@@ -81,6 +91,33 @@ def generate_image(
             quality=quality,
             n=n,
         )
+    else:
+        req_body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "responseModalities": ["TEXT", "IMAGE"],
+            },
+        }
+        req = urllib.request.Request(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            data=json.dumps(req_body).encode("utf-8"),
+            headers={
+                "x-goog-api-key": str(getattr(client, "_gemini_api_key", "")),
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=IMAGE_GEN_TIMEOUT_S) as resp_http:
+            payload = json.loads(resp_http.read().decode("utf-8", errors="replace"))
+        for cand in payload.get("candidates", []):
+            content = cand.get("content") or {}
+            for part in content.get("parts", []):
+                inline = part.get("inlineData") or {}
+                data_b64 = inline.get("data")
+                mime = inline.get("mimeType", "image/png")
+                if data_b64:
+                    return f"data:{mime};base64,{data_b64}"
+        raise RuntimeError("Gemini returned no image payload.")
     image_data = resp.data[0]
     if getattr(image_data, "url", None):
         return str(image_data.url)

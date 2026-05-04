@@ -9,6 +9,10 @@ BACKOFF_BASE_S = 5
 OPENAI_DEFAULT_IMAGE_MODEL = "gpt-image-2"
 OPENAI_DEFAULT_CHAT_MODEL = "gpt-4o-mini"
 OPENAI_DEFAULT_VISION_MODEL = "gpt-4o"
+GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+GEMINI_DEFAULT_IMAGE_MODEL = "nano-banana-pro"
+GEMINI_DEFAULT_CHAT_MODEL = "gemini-2.5-pro"
+GEMINI_DEFAULT_VISION_MODEL = "gemini-2.5-pro"
 
 # LLM document cleanup chunking (per OpenAI chat input limits)
 DOCUMENT_CLEAN_MAX_CHUNK_CHARS = 14_000
