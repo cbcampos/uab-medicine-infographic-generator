@@ -708,6 +708,14 @@ def build_infographic_prompt(
 - Style: {style["name"]}
 - Audience: {audience_key}
 
+## Composition and Layout (follow this structure)
+- TOP REGION: Title/headline centered, large, bold — reserve for key message
+- LEFT / CENTER: Primary content area — key points, icons, illustrations, data callouts
+- RIGHT / LOWER: Supporting content, secondary data, evidence summaries
+- BOTTOM: Clean white band for logo placement (bottom-right or bottom-center)
+- Leave generous negative space — do NOT crowd the layout
+- When specific text must appear in the image, write it EXACTLY as it should appear (use ALL CAPS for headings, spell out all technical/medical terms letter by letter)
+
 ## Style Guidelines
 {style["prompt"]}
 
@@ -748,6 +756,7 @@ def build_infographic_prompt(
 - Keep information concise, highlight keywords and core concepts
 - Use whitespace effectively to emphasize key points
 - Output in the same language as the provided content
+- TEXT IN IMAGE: Write any specific text EXACTLY as it should appear. Use ALL CAPS for titles/headlines. Spell out technical and medical terms letter by letter for accuracy (e.g. "H Y P E R T E N S I O N" not "hypertension" if that is the intended rendering). Do not approximate — if exact wording matters, quote it verbatim.
 
 ## Instructions
 Use the image generation model to create the illustration based on the provided input.
@@ -936,6 +945,7 @@ def main() -> None:
             options=["1024x1024", "1024x1792", "1792x1024"],
             index=2,
             key="img_size",
+            help="1792x1024 = 16:9 (recommended for infographics) | 2K (2560x1440) is supported but flagged as experimental by OpenAI — results may be more variable above this resolution",
         )
         quality = st.selectbox("Quality", options=["high", "medium"], index=0, key="img_quality")
 
