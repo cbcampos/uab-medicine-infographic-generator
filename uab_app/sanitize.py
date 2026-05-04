@@ -18,7 +18,12 @@ INJECTION_RULES: list[tuple[str, str, re.Pattern[str]]] = [
 
 
 def strip_control_chars(s: str) -> str:
-    return "".join(ch for ch in s if ch == "\n" or ch == "\t" or ord(ch) >= 32)
+    """Normalize whitespace: preserve newlines/tabs, normalize \\r to \\n, strip other control chars."""
+    return "".join(
+        "\n" if ch == "\r" else ch
+        for ch in s
+        if ch == "\n" or ch == "\t" or ch == "\r" or ord(ch) >= 32
+    )
 
 
 def detect_prompt_injection(text: str) -> list[str]:

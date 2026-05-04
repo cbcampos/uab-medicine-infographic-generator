@@ -45,6 +45,15 @@ CHART_DATA_FILE_EXT = {".csv", ".xlsx", ".json"}
 CHART_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_CHART_UPLOAD_BYTES = MAX_UPLOAD_BYTES
 
+# Chart extraction limits
+CHART_EXTRACTION_CONTEXT_MAX_CHARS = 8000
+CHART_CONFLICT_MAX_ITEMS = 25
+
+# Session state size limits
+MAX_GENERATION_HISTORY = 20
+MAX_CLEANED_DOCS_CACHE = 10
+MAX_SESSION_CHARTS = 50
+
 EXTRACTION_SYSTEM_PROMPT = """You extract structured data from medical/statistical charts for an infographic pipeline.
 Output ONLY valid JSON (no markdown fences, no commentary). Use this exact schema:
 {

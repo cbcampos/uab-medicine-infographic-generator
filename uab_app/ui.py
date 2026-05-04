@@ -39,11 +39,15 @@ from uab_app.charts import (
 from uab_app.cleanup import cache_key_for_raw, clean_document_text_llm
 from uab_app.constants import (
     ALLOWED_UPLOAD_EXTENSIONS,
+    CHART_EXTRACTION_CONTEXT_MAX_CHARS,
     CHART_MODES,
     GEMINI_DEFAULT_CHAT_MODEL,
     GEMINI_DEFAULT_IMAGE_MODEL,
     GEMINI_DEFAULT_VISION_MODEL,
+    MAX_CLEANED_DOCS_CACHE,
     MAX_CHART_UPLOAD_BYTES,
+    MAX_GENERATION_HISTORY,
+    MAX_SESSION_CHARTS,
     MAX_UPLOAD_BYTES,
     OPENAI_DEFAULT_CHAT_MODEL,
     OPENAI_DEFAULT_IMAGE_MODEL,
@@ -114,7 +118,7 @@ def run_chart_figure_vision_extract(
 ) -> None:
     raw_b = base64.b64decode(chart["_bytes_b64"])
     mime = chart.get("_mime") or "image/png"
-    extra = snippet_txt[:8000] if snippet_txt.strip() else cross_text[:8000]
+    extra = snippet_txt[:CHART_EXTRACTION_CONTEXT_MAX_CHARS] if snippet_txt.strip() else cross_text[:CHART_EXTRACTION_CONTEXT_MAX_CHARS]
     raw_j = gpt4o_extract_chart_from_image(
         client, raw_b, mime, vision_model, extra
     )
@@ -158,6 +162,16 @@ def init_session_state() -> None:
         st.session_state.last_fidelity_qa_pass = False
     if "last_post_gen_chart_qa_text" not in st.session_state:
         st.session_state.last_post_gen_chart_qa_text = ""
+
+    # Enforce session state size limits to prevent memory bloat
+    if len(st.session_state.generation_history) > MAX_GENERATION_HISTORY:
+        st.session_state.generation_history = st.session_state.generation_history[-MAX_GENERATION_HISTORY:]
+    if len(st.session_state.charts) > MAX_SESSION_CHARTS:
+        st.session_state.charts = st.session_state.charts[-MAX_SESSION_CHARTS:]
+    if len(st.session_state.cleaned_docs_cache) > MAX_CLEANED_DOCS_CACHE:
+        # Remove oldest entries
+        cache_items = list(st.session_state.cleaned_docs_cache.items())
+        st.session_state.cleaned_docs_cache = dict(cache_items[-MAX_CLEANED_DOCS_CACHE:])
 
 
 def set_progress(
@@ -469,7 +483,10 @@ def main() -> None:
                 st.markdown(f"**{name}** ({len(text)} chars)")
                 st.text(preview + ("..." if len(text) > 1500 else ""))
         else:
-            st.caption("Upload PDF, DOCX, or TXT to preview extracted text.")
+            st.markdown(
+                "<span style='color: #666'>No documents uploaded yet. Upload PDF, DOCX, or TXT files above to see extracted text here.</span>",
+                unsafe_allow_html=True,
+            )
 
     # ── API helpers (used by chart extraction + generation) ──
     def get_credentials() -> tuple[bool, str, Any, str, str]:
@@ -566,16 +583,18 @@ def main() -> None:
         "Use **Review charts in output** below after generation to validate what was rendered."
     )
     chart_figures = st.file_uploader(
-        "Upload existing chart or figure",
+        "Upload existing chart or figure (PNG, JPG, WEBP)",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
         key="chart_figure_uploader",
+        help="Upload chart images from publications. The model will extract values for accuracy.",
     )
     chart_data_files = st.file_uploader(
         "Upload raw data (CSV, XLSX, JSON)",
         type=["csv", "xlsx", "json"],
         accept_multiple_files=True,
         key="chart_data_uploader",
+        help="Upload data files with exact values for charts, bars, or statistics.",
     )
     has_chart_inputs = bool(st.session_state.charts or chart_figures or chart_data_files)
     step_context_ready = bool(sanitized_context.strip() or extracted_preview)
@@ -912,6 +931,12 @@ def main() -> None:
                     st.rerun()
         with ec2:
             st.caption("One vision API call per figure.")
+
+    if not st.session_state.charts:
+        st.markdown(
+            "<span style='color: #666'>No chart references yet. Upload chart images or data files above, or use the buttons below to add manual entries.</span>",
+            unsafe_allow_html=True,
+        )
 
     for idx, chart in enumerate(list(st.session_state.charts)):
         cid = chart.get("chart_id", f"idx_{idx}")

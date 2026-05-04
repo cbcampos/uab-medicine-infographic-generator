@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from openai import AzureOpenAI, OpenAI
 
-from uab_app.constants import EXTRACTION_SYSTEM_PROMPT
+from uab_app.constants import CHART_CONFLICT_MAX_ITEMS, EXTRACTION_SYSTEM_PROMPT
 
 # Auto-generated doc-vs-chart conflict rows use this marker so toggling
 # cross-check can drop them without losing user-entered conflicts.
@@ -254,7 +254,7 @@ def detect_document_chart_conflicts(
             continue
         seen.add(sig)
         unique.append(c)
-    return unique[:25]
+    return unique[:CHART_CONFLICT_MAX_ITEMS]
 
 
 def merge_extraction_into_chart(raw: dict[str, Any], existing: ChartData) -> None:
@@ -317,6 +317,12 @@ def gpt4o_extract_chart_from_image(
         temperature=0.1,
         max_tokens=4096,
     )
+    if not resp.choices:
+        return {
+            "chart_type": "no_response",
+            "data_series": [],
+            "extraction_warnings": ["API returned no choices — check model availability and API key."],
+        }
     content = _chat_completion_content_as_text(resp.choices[0].message.content)
     out = parse_json_relaxed(content)
     if isinstance(out, dict):
@@ -513,7 +519,7 @@ def refresh_chart_reference_hints(
             continue
         seen.add(sig)
         unique.append(item)
-    c["conflicts"] = unique[:25]
+    c["conflicts"] = unique[:CHART_CONFLICT_MAX_ITEMS]
     warns = median_iqr_data_sufficiency_warning(cd)
     c["extraction_warnings"] = list(
         dict.fromkeys((c.get("extraction_warnings") or []) + warns)
