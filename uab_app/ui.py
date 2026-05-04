@@ -24,6 +24,7 @@ from uab_app.audit import audit_log
 from uab_app.charts import (
     chart_dict_to_dataclass,
     format_chart_reference_for_prompt,
+    format_publication_fidelity_qa_markdown,
     gpt4o_extract_chart_from_image,
     merge_extraction_into_chart,
     new_chart_id,
@@ -1368,6 +1369,9 @@ def main() -> None:
                             )
                             st.session_state.last_fidelity_qa_result = qa_obj
                             st.session_state.last_fidelity_qa_pass = bool(qa_obj.get("pass", False))
+                            st.session_state.last_post_gen_chart_qa_text = (
+                                format_publication_fidelity_qa_markdown(qa_obj)
+                            )
                             if st.session_state.last_fidelity_qa_pass:
                                 st.success("Publication fidelity QA: PASS")
                             else:
@@ -1380,7 +1384,13 @@ def main() -> None:
                                 st.session_state.last_image_bytes,
                                 str(st.session_state.get("last_chart_reference_block", "") or ""),
                             )
-                            st.session_state.last_post_gen_chart_qa_text = qa_txt or ""
+                            if (qa_txt or "").strip():
+                                st.session_state.last_post_gen_chart_qa_text = qa_txt.strip()
+                            else:
+                                st.session_state.last_post_gen_chart_qa_text = (
+                                    "- _(The vision model returned an empty response. "
+                                    "Try again, pick another vision model, or check API errors.)_"
+                                )
                         audit_log(
                             session_id,
                             provider,
@@ -1392,14 +1402,13 @@ def main() -> None:
                         )
                     except BaseException as ex:
                         st.error(user_friendly_error(ex))
-            if not publication_fidelity_mode:
-                qa_saved = (st.session_state.get("last_post_gen_chart_qa_text") or "").strip()
-                if qa_saved:
-                    st.markdown("#### Chart review output")
-                    st.markdown(qa_saved)
-                    if st.button("Clear chart review output", key="btn_clear_post_gen_qa", type="secondary"):
-                        st.session_state.last_post_gen_chart_qa_text = ""
-                        st.rerun()
+            qa_saved = (st.session_state.get("last_post_gen_chart_qa_text") or "").strip()
+            if qa_saved:
+                st.markdown("#### Chart review output")
+                st.markdown(qa_saved)
+                if st.button("Clear chart review output", key="btn_clear_post_gen_qa", type="secondary"):
+                    st.session_state.last_post_gen_chart_qa_text = ""
+                    st.rerun()
             if publication_fidelity_mode and st.session_state.get("last_fidelity_qa_result") is not None:
                 st.caption("Latest publication-fidelity result")
                 st.json(st.session_state.last_fidelity_qa_result)

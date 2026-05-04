@@ -640,3 +640,28 @@ def run_publication_fidelity_qa(
         },
         "recommendation": "Re-run QA or regenerate.",
     }
+
+
+def format_publication_fidelity_qa_markdown(qa: dict[str, Any]) -> str:
+    """Readable markdown bullets from structured publication-fidelity QA (for UI display)."""
+    lines: list[str] = []
+    lines.append(f"- **Overall:** {'PASS' if bool(qa.get('pass')) else 'FAIL'}")
+    crit = [str(x) for x in (qa.get("critical_issues") or []) if str(x).strip()]
+    if crit:
+        lines.append("- **Critical issues:**")
+        for c in crit:
+            lines.append(f"  - {c}")
+    minor = [str(x) for x in (qa.get("minor_issues") or []) if str(x).strip()]
+    if minor:
+        lines.append("- **Minor issues:**")
+        for m in minor:
+            lines.append(f"  - {m}")
+    chk = qa.get("checks")
+    if isinstance(chk, dict) and chk:
+        lines.append("- **Checks:**")
+        for k, v in chk.items():
+            lines.append(f"  - **{k}:** {v}")
+    rec = str(qa.get("recommendation", "") or "").strip()
+    if rec:
+        lines.append(f"- **Recommendation:** {rec}")
+    return "\n".join(lines) if len(lines) > 1 else (lines[0] if lines else "- _(No QA detail returned)_")
