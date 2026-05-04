@@ -1,4 +1,4 @@
-"""Chart verification data model, parsing, extraction, and prompt blocks (SPEC §19)."""
+"""User-provided chart reference data: extraction helpers, prompt blocks, post-gen QA."""
 
 from __future__ import annotations
 
@@ -13,10 +13,7 @@ from typing import Any, Optional
 
 from openai import AzureOpenAI, OpenAI
 
-from uab_app.constants import (
-    CHART_BLOCKING_STATUSES,
-    EXTRACTION_SYSTEM_PROMPT,
-)
+from uab_app.constants import EXTRACTION_SYSTEM_PROMPT
 
 # Auto-generated doc-vs-chart conflict rows use this marker so toggling
 # cross-check can drop them without losing user-entered conflicts.
@@ -318,25 +315,25 @@ def median_iqr_data_sufficiency_warning(chart: ChartData) -> list[str]:
     return warns
 
 
-def format_verified_charts_for_prompt(charts: list[dict[str, Any]]) -> str:
-    """SPEC §19j — only verified or placeholder_approved charts contribute."""
+def format_chart_reference_for_prompt(charts: list[dict[str, Any]]) -> str:
+    """Fold user-provided publication figures / data files into the image prompt (no pre-verify step)."""
     blocks: list[str] = []
     for c in charts:
-        st = c.get("verification_status", "")
-        if st == "removed":
-            continue
-        if st not in ("verified", "placeholder_approved"):
+        if c.get("verification_status") == "removed":
             continue
         cd = chart_dict_to_dataclass(c)
         mode_note = ""
         if cd.chart_mode == "reference_only":
-            mode_note = " [REFERENCE-ONLY — non-exact visual inspiration; do not copy numbers unless listed below.]"
-        if st == "placeholder_approved":
+            mode_note = (
+                " [REFERENCE-ONLY — use as visual inspiration; copy only numbers explicitly listed below.]"
+            )
+        ct = str(cd.chart_type or "").lower()
+        if ct == "placeholder":
             blocks.append(
                 f"- PLACEHOLDER{mode_note}: {cd.placeholder_text or 'Exact values to be inserted from source figure/table'}"
             )
             continue
-        payload = {
+        payload: dict[str, Any] = {
             "chart_type": cd.chart_type,
             "title": cd.title,
             "axis_labels": cd.axis_labels,
@@ -346,54 +343,41 @@ def format_verified_charts_for_prompt(charts: list[dict[str, Any]]) -> str:
             "data_series": cd.data_series,
             "footnotes": cd.footnotes,
             "source_citation": cd.source_citation,
+            "source_file": cd.source_file,
             "chart_mode": cd.chart_mode,
+            "visual_reference_upload": cd.visual_reference,
         }
+        if cd.visual_reference and not cd.data_series:
+            payload["note"] = (
+                "Figure uploaded from publication — run vision extraction to capture numbers, "
+                "or rely on accompanying document text."
+            )
         blocks.append(json.dumps(payload, ensure_ascii=False, indent=2))
     if not blocks:
         return ""
     return (
-        "CHART ACCURACY RULES: Use only the verified chart data below. Do not infer, estimate, "
-        "interpolate, or invent values. Do not add extra series, labels, axes, subgroups, "
-        "confidence intervals, or legends. If any value is missing, render the approved "
-        "placeholder text exactly. Preserve all numeric labels exactly.\n\n"
-        "[VERIFIED CHART DATA]:\n" + "\n\n".join(blocks)
+        "CHART ACCURACY: User-provided reference below is from manuscripts/publications or their data files. "
+        "When you include charts in the infographic, align labels, values, intervals, and group names with "
+        "this reference. Do not invent statistics beyond what the reference and source documents support. "
+        "If reference values are incomplete, use labeled placeholder boxes as required by the chart rules.\n\n"
+        "[USER CHART REFERENCE]:\n" + "\n\n".join(blocks)
     )
 
 
-def chart_gate_blocks_generation(
-    includes_charts: bool,
-    charts: list[dict[str, Any]],
-) -> tuple[bool, str]:
-    if not includes_charts:
-        return False, ""
-    active = [c for c in charts if c.get("verification_status") != "removed"]
-    if not active:
-        return (
-            True,
-            "Chart workflow is on: add at least one chart (data, figure, or placeholder) or turn off "
-            "'includes charts'.",
-        )
-    for c in active:
-        if c.get("verification_status") in CHART_BLOCKING_STATUSES:
-            label = c.get("title") or c.get("chart_id")
-            return True, f"Chart '{label}' is not verified — complete verification or use placeholder/remove."
-    return False, ""
-
-
-def recompute_chart_status_after_change(
+def refresh_chart_reference_hints(
     c: dict[str, Any],
     document_text: str,
     cross_check_documents: bool = False,
 ) -> None:
-    """Set needs_review / conflict_unresolved based on confidence and optional doc cross-check."""
+    """Optional hints: doc-vs-chart heuristics and IQR warnings — informational only (does not block generation)."""
+    if c.get("verification_status") == "removed":
+        return
     cd = chart_dict_to_dataclass(c)
     prev = list(c.get("conflicts") or [])
     kept = [x for x in prev if x.get("document_value") != HEURISTIC_CONFLICT_DOC_VALUE]
-
     extra: list[dict[str, Any]] = []
     if cross_check_documents:
         extra = detect_document_chart_conflicts(cd, document_text)
-
     merged = kept + extra
     seen: set[tuple[str | None, str, str]] = set()
     unique: list[dict[str, Any]] = []
@@ -404,38 +388,41 @@ def recompute_chart_status_after_change(
         seen.add(sig)
         unique.append(item)
     c["conflicts"] = unique[:25]
-
-    if c.get("verification_status") in ("verified", "placeholder_approved", "removed"):
-        return
     warns = median_iqr_data_sufficiency_warning(cd)
     c["extraction_warnings"] = list(
         dict.fromkeys((c.get("extraction_warnings") or []) + warns)
     )
-    if c["conflicts"]:
-        c["verification_status"] = "conflict_unresolved"
-    elif c.get("low_confidence_fields"):
-        c["verification_status"] = "needs_review"
-    else:
-        c["verification_status"] = c.get("verification_status") or "unverified"
 
 
 def run_post_generation_chart_qa(
     client: OpenAI | AzureOpenAI,
     vision_model: str,
     image_bytes: bytes,
-    verified_charts_block: str,
+    chart_reference_block: str,
 ) -> str:
-    """SPEC §19i — lightweight vision checklist vs verified chart object."""
-    if not verified_charts_block.strip():
-        return "No verified chart block was in the prompt — QA skipped."
+    """Vision review of the rendered infographic — with optional comparison to user chart reference."""
     b64 = base64.b64encode(image_bytes).decode("ascii")
-    prompt = (
-        "You verify an infographic image against the REQUIRED chart specification below.\n"
-        "Answer in plain bullet points: (1) Are all chart labels/values from the spec visible? "
-        "(2) Any extra numbers not in the spec? (3) Missing values? (4) Placeholder handling OK?\n"
-        "Be concise.\n\nREQUIRED:\n"
-        + verified_charts_block[:12000]
-    )
+    if chart_reference_block.strip():
+        prompt = (
+            "You are reviewing a FINISHED INFOGRAPHIC IMAGE.\n"
+            "Compare it to the USER-PROVIDED chart reference (from publications / extracted data) below.\n"
+            "Answer in plain bullet points:\n"
+            "(1) Do numbers, labels, and intervals in the infographic match the reference where applicable?\n"
+            "(2) Any invented, duplicated, or inconsistent statistics?\n"
+            "(3) Missing labels or incorrect chart types?\n"
+            "(4) Should the user regenerate? One sentence recommendation.\n"
+            "Be concise.\n\n"
+            "[USER CHART REFERENCE]:\n"
+            + chart_reference_block[:12000]
+        )
+    else:
+        prompt = (
+            "You are reviewing a FINISHED INFOGRAPHIC IMAGE for data visualization quality.\n"
+            "Identify charts, plots, tables, or numeric callouts. List key numbers you can read.\n"
+            "Flag anything that looks inconsistent, like placeholder text, contradictory values, "
+            "or suspicious precision. Give concise bullet points to decide if regeneration is needed.\n"
+            "No separate reference was supplied — judge only what appears in the image."
+        )
     resp = client.chat.completions.create(
         model=vision_model,
         messages=[

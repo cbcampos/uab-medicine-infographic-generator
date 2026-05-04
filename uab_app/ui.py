@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import copy
 import os
 import time
 import uuid
@@ -21,18 +20,17 @@ try:
 except ImportError:
     pass
 
-from uab_app.audit import audit_log, log_chart_audit_trail
+from uab_app.audit import audit_log
 from uab_app.charts import (
     chart_dict_to_dataclass,
-    chart_gate_blocks_generation,
-    format_verified_charts_for_prompt,
+    format_chart_reference_for_prompt,
     gpt4o_extract_chart_from_image,
     merge_extraction_into_chart,
     new_chart_id,
     parse_csv_to_data_series,
     parse_json_data_file,
     parse_xlsx_to_data_series,
-    recompute_chart_status_after_change,
+    refresh_chart_reference_hints,
     run_post_generation_chart_qa,
 )
 from uab_app.cleanup import cache_key_for_raw, clean_document_text_llm
@@ -77,8 +75,8 @@ def init_session_state() -> None:
         st.session_state.processed_chart_figure_sigs = set()
     if "processed_data_file_sigs" not in st.session_state:
         st.session_state.processed_data_file_sigs = set()
-    if "last_verified_charts_block" not in st.session_state:
-        st.session_state.last_verified_charts_block = ""
+    if "last_chart_reference_block" not in st.session_state:
+        st.session_state.last_chart_reference_block = ""
     if "chart_extraction_nonce" not in st.session_state:
         st.session_state.chart_extraction_nonce = 0
     if "cleaned_docs_cache" not in st.session_state:
@@ -415,17 +413,12 @@ def main() -> None:
                 )
         return cleaned, notes
 
-    # ── Chart accuracy inputs & verification (SPEC §19) ────────
-    st.markdown("### 📊 Chart accuracy inputs")
+    # ── Publication chart / data reference (optional, no pre-verify step) ──
+    st.markdown("### 📊 Publication chart reference (optional)")
     st.caption(
-        "Upload existing chart or figure (optional). This helps preserve structure, labels, and layout. "
-        "For best accuracy, also provide raw data or confirm extracted values before generation."
-    )
-    includes_charts_chk = st.checkbox(
-        "This infographic includes charts, statistics, confidence intervals, or numeric data "
-        "(verification workflow)",
-        key="infographic_includes_charts",
-        help="When enabled, generation is blocked until every chart is verified, placeholder-approved, or removed.",
+        "Upload figures or tables from manuscripts, or raw chart data (CSV/XLSX/JSON). "
+        "This is folded into the prompt so generated infographics align with publication values. "
+        "Use **Review charts in output** below after generation to validate what was rendered."
     )
     chart_figures = st.file_uploader(
         "Upload existing chart or figure",
@@ -440,10 +433,10 @@ def main() -> None:
         key="chart_data_uploader",
     )
     chart_context_snippet = st.text_area(
-        "Optional: paste extra source text for extraction cross-check",
+        "Optional: paste extra source text to help extraction",
         height=80,
         key="chart_context_snippet",
-        help="Shown to the vision model when extracting from chart images.",
+        help="Shown to the vision model when extracting numbers from figure uploads.",
     )
     snippet_txt = chart_context_snippet.strip()
     cross_text = (snippet_txt + "\n" + combined_docs).strip()
@@ -454,10 +447,6 @@ def main() -> None:
         key="chart_cross_check_documents",
     )
     _cc = st.session_state.get("chart_cross_check_documents", False)
-
-    wf_charts_on = includes_charts_chk or bool(chart_figures) or bool(chart_data_files) or bool(
-        st.session_state.charts
-    )
 
     fig_sigs: set[tuple[str, int]] = set(st.session_state.processed_chart_figure_sigs)
     if chart_figures:
@@ -490,7 +479,7 @@ def main() -> None:
                     "data_series": [],
                     "footnotes": [],
                     "source_citation": "",
-                    "verification_status": "unverified",
+                    "verification_status": "active",
                     "confidence_level": {},
                     "data_source_types": ["chart_image"],
                     "visual_reference": True,
@@ -547,7 +536,7 @@ def main() -> None:
                     "data_series": series,
                     "footnotes": [],
                     "source_citation": "",
-                    "verification_status": "unverified",
+                    "verification_status": "active",
                     "confidence_level": {},
                     "data_source_types": [dtype],
                     "visual_reference": False,
@@ -561,7 +550,7 @@ def main() -> None:
                 }
             )
             c_last = st.session_state.charts[-1]
-            recompute_chart_status_after_change(c_last, cross_text, _cc)
+            refresh_chart_reference_hints(c_last, cross_text, _cc)
     st.session_state.processed_data_file_sigs = data_sigs
 
     c1p, c2p, c3p = st.columns(3)
@@ -581,7 +570,7 @@ def main() -> None:
                     ],
                     "footnotes": [],
                     "source_citation": "",
-                    "verification_status": "unverified",
+                    "verification_status": "active",
                     "confidence_level": {},
                     "data_source_types": ["manual"],
                     "visual_reference": False,
@@ -594,7 +583,7 @@ def main() -> None:
                     "low_confidence_fields": [],
                 }
             )
-            recompute_chart_status_after_change(st.session_state.charts[-1], cross_text, _cc)
+            refresh_chart_reference_hints(st.session_state.charts[-1], cross_text, _cc)
     with c2p:
         if st.button("➕ Add placeholder chart", key="btn_add_placeholder_chart"):
             st.session_state.charts.append(
@@ -609,7 +598,7 @@ def main() -> None:
                     "data_series": [],
                     "footnotes": [],
                     "source_citation": "",
-                    "verification_status": "unverified",
+                    "verification_status": "active",
                     "confidence_level": {},
                     "data_source_types": ["manual"],
                     "visual_reference": False,
@@ -629,185 +618,129 @@ def main() -> None:
             st.session_state.processed_data_file_sigs = set()
             st.rerun()
 
-    st.markdown("#### Verification")
+    st.markdown("#### Reference entries")
     for idx, chart in enumerate(list(st.session_state.charts)):
         cid = chart.get("chart_id", f"idx_{idx}")
-        status = chart.get("verification_status", "unverified")
-        badge = {"verified": "✅ verified", "placeholder_approved": "✅ placeholder OK", "removed": "⛔ removed", "needs_review": "⚠️ needs review", "conflict_unresolved": "❌ conflict", "unverified": "⏳ unverified"}.get(
-            status, status
-        )
-        with st.expander(f"Chart {idx + 1}: {chart.get('title') or cid} — {badge}", expanded=(status not in ("verified", "placeholder_approved", "removed"))):
-            t1, t2 = st.columns(2)
-            with t1:
-                chart["title"] = st.text_input("Title", value=chart.get("title", ""), key=f"tit_{cid}")
-                chart["chart_type"] = st.text_input("Chart type", value=chart.get("chart_type", ""), key=f"ct_{cid}")
-            with t2:
-                chart["chart_mode"] = st.selectbox(
-                    "Chart mode",
-                    options=list(CHART_MODES),
-                    format_func=lambda m: {
-                        "exact": "Exact (default)",
-                        "style_transform": "Style transform (data locked)",
-                        "reference_only": "Reference-only (non-exact)",
-                    }[m],
-                    index=list(CHART_MODES).index(chart.get("chart_mode", "exact"))
-                    if chart.get("chart_mode") in CHART_MODES
-                    else 0,
-                    key=f"mode_{cid}",
-                )
-            chart["source_citation"] = st.text_input(
-                "Source citation", value=chart.get("source_citation", ""), key=f"src_{cid}"
-            )
-
-            ds_default = chart.get("data_series") or [{"group": "", "value": "", "label": "", "unit": ""}]
-            edited = st.data_editor(
-                pd.DataFrame(ds_default),
-                num_rows="dynamic",
-                key=f"de_{cid}",
-                use_container_width=True,
-            )
-            if edited is not None and not edited.empty:
-                chart["data_series"] = edited.to_dict(orient="records")
-
-            foot = "\n".join(chart.get("footnotes") or [])
-            nfoot = st.text_area("Footnotes (one per line)", value=foot, height=60, key=f"ft_{cid}")
-            chart["footnotes"] = [ln for ln in nfoot.splitlines() if ln.strip()]
-
-            if chart.get("_bytes_b64"):
-                st.caption("Figure upload — run extraction to populate fields from the image.")
-                ex_col = st.columns([1, 2])[0]
-                with ex_col:
-                    if st.button("Run GPT-4o extraction", key=f"ex_{cid}"):
-                        ok_e, err_e, client_e, _im, _cm = get_credentials()
-                        if not ok_e or client_e is None:
-                            st.error(err_e or "API not configured.")
-                        else:
-                            try:
-                                raw_b = base64.b64decode(chart["_bytes_b64"])
-                                mime = chart.get("_mime") or "image/png"
-                                extra = cross_text[:8000]
-                                if snippet_txt:
-                                    extra = snippet_txt[:8000]
-                                raw_j = gpt4o_extract_chart_from_image(
-                                    client_e, raw_b, mime, get_vision_model_name(), extra
-                                )
-                                cd = chart_dict_to_dataclass(chart)
-                                merge_extraction_into_chart(raw_j, cd)
-                                chart.update(cd.to_dict())
-                                chart["_bytes_b64"] = chart.get("_bytes_b64")
-                                chart["_mime"] = chart.get("_mime")
-                                recompute_chart_status_after_change(chart, cross_text, _cc)
-                                if chart.get("low_confidence_fields"):
-                                    chart["verification_status"] = "needs_review"
-                                st.session_state.chart_extraction_nonce += 1
-                                st.success("Extraction complete — review and confirm.")
-                                st.rerun()
-                            except Exception as ex:
-                                st.error(user_friendly_error(ex))
-
-            warns = chart.get("extraction_warnings") or []
-            lowc = chart.get("low_confidence_fields") or []
-            if warns or lowc:
-                st.warning(
-                    "Low confidence or warnings: "
-                    + "; ".join(warns)
-                    + (" | Fields: " + ", ".join(lowc) if lowc else "")
-                )
-
-            conf = chart.get("conflicts") or []
-            if conf:
-                st.error(
-                    "Possible conflict between chart values and source text — edit the data table "
-                    "to match your approved source, or document why values differ, then re-check."
-                )
-                for co in conf:
-                    st.markdown(
-                        f"- **{co.get('field')}** — document: `{co.get('document_value')}` vs chart: `{co.get('chart_image_value')}`"
+        removed = chart.get("verification_status") == "removed"
+        badge = "removed from prompt" if removed else "included in prompt"
+        with st.expander(
+            f"Reference {idx + 1}: {chart.get('title') or cid} — {badge}",
+            expanded=False,
+        ):
+            if removed:
+                st.caption("Excluded from the generation prompt.")
+                if st.button("Include in prompt again", key=f"restore_{cid}"):
+                    chart["verification_status"] = "active"
+                    st.rerun()
+            else:
+                t1, t2 = st.columns(2)
+                with t1:
+                    chart["title"] = st.text_input(
+                        "Title", value=chart.get("title", ""), key=f"tit_{cid}"
                     )
-                if st.button("Mark conflicts reviewed (I edited the data table)", key=f"cf_done_{cid}"):
-                    chart["conflicts"] = []
-                    chart["verification_status"] = "unverified"
-                    recompute_chart_status_after_change(chart, cross_text, _cc)
-                    st.rerun()
-
-            ph_cols = st.columns([2, 1])
-            with ph_cols[0]:
-                chart["placeholder_text"] = st.text_input(
-                    "Placeholder text (if using placeholder approval)",
-                    value=chart.get("placeholder_text", ""),
-                    key=f"pht_{cid}",
+                    chart["chart_type"] = st.text_input(
+                        "Chart type", value=chart.get("chart_type", ""), key=f"ct_{cid}"
+                    )
+                with t2:
+                    chart["chart_mode"] = st.selectbox(
+                        "Chart mode",
+                        options=list(CHART_MODES),
+                        format_func=lambda m: {
+                            "exact": "Exact (default)",
+                            "style_transform": "Style transform (data locked)",
+                            "reference_only": "Reference-only (non-exact)",
+                        }[m],
+                        index=list(CHART_MODES).index(chart.get("chart_mode", "exact"))
+                        if chart.get("chart_mode") in CHART_MODES
+                        else 0,
+                        key=f"mode_{cid}",
+                    )
+                chart["source_citation"] = st.text_input(
+                    "Source citation", value=chart.get("source_citation", ""), key=f"src_{cid}"
                 )
-            action_cols = st.columns(4)
-            with action_cols[0]:
-                if st.button("✓ Confirm chart data", key=f"vok_{cid}"):
-                    if chart.get("conflicts"):
-                        st.error("Resolve conflicts first (use Re-check after editing the table).")
-                    else:
-                        chart["verification_status"] = "verified"
-                        audit_entry = {
-                            "chart_id": chart.get("chart_id"),
-                            "source_file": chart.get("source_file"),
-                            "source_location": chart.get("source_location"),
-                            "source_type": "|".join(chart.get("data_source_types") or ["unknown"]),
-                            "verified_by_user": True,
-                            "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                            "final_chart_type": chart.get("chart_type"),
-                            "allowed_values_only": True,
-                            "conflicts_resolved": copy.deepcopy(chart.get("conflicts") or []),
-                        }
-                        log_chart_audit_trail(
-                            session_id,
-                            provider,
-                            selected_style_key if mode == "single" else "compare",
-                            audience,
-                            audit_entry,
+
+                ds_default = chart.get("data_series") or [
+                    {"group": "", "value": "", "label": "", "unit": ""}
+                ]
+                edited = st.data_editor(
+                    pd.DataFrame(ds_default),
+                    num_rows="dynamic",
+                    key=f"de_{cid}",
+                    use_container_width=True,
+                )
+                if edited is not None and not edited.empty:
+                    chart["data_series"] = edited.to_dict(orient="records")
+
+                foot = "\n".join(chart.get("footnotes") or [])
+                nfoot = st.text_area(
+                    "Footnotes (one per line)", value=foot, height=60, key=f"ft_{cid}"
+                )
+                chart["footnotes"] = [ln for ln in nfoot.splitlines() if ln.strip()]
+
+                if chart.get("_bytes_b64"):
+                    st.caption("Publication figure — run extraction to pull numbers into the table.")
+                    ex_col = st.columns([1, 2])[0]
+                    with ex_col:
+                        if st.button("Run vision extraction", key=f"ex_{cid}"):
+                            ok_e, err_e, client_e, _im, _cm = get_credentials()
+                            if not ok_e or client_e is None:
+                                st.error(err_e or "API not configured.")
+                            else:
+                                try:
+                                    raw_b = base64.b64decode(chart["_bytes_b64"])
+                                    mime = chart.get("_mime") or "image/png"
+                                    extra = cross_text[:8000]
+                                    if snippet_txt:
+                                        extra = snippet_txt[:8000]
+                                    raw_j = gpt4o_extract_chart_from_image(
+                                        client_e, raw_b, mime, get_vision_model_name(), extra
+                                    )
+                                    cd = chart_dict_to_dataclass(chart)
+                                    merge_extraction_into_chart(raw_j, cd)
+                                    chart.update(cd.to_dict())
+                                    chart["_bytes_b64"] = chart.get("_bytes_b64")
+                                    chart["_mime"] = chart.get("_mime")
+                                    refresh_chart_reference_hints(chart, cross_text, _cc)
+                                    st.session_state.chart_extraction_nonce += 1
+                                    st.success("Extraction complete — values are sent with the next generation.")
+                                    st.rerun()
+                                except Exception as ex:
+                                    st.error(user_friendly_error(ex))
+
+                warns = chart.get("extraction_warnings") or []
+                lowc = chart.get("low_confidence_fields") or []
+                if warns or lowc:
+                    st.warning(
+                        "Extraction notes: "
+                        + "; ".join(warns)
+                        + (" | Fields: " + ", ".join(lowc) if lowc else "")
+                    )
+
+                conf = chart.get("conflicts") or []
+                if conf:
+                    st.info(
+                        "Optional cross-check vs document text (edit the table if you disagree with a flag):"
+                    )
+                    for co in conf:
+                        st.markdown(
+                            f"- **{co.get('field')}** — document: `{co.get('document_value')}` vs "
+                            f"reference: `{co.get('chart_image_value')}`"
                         )
-                        audit_log(
-                            session_id,
-                            provider,
-                            selected_style_key if mode == "single" else "compare_run",
-                            audience,
-                            True,
-                            0,
-                            "chart_verified",
-                            {"chart_id": chart.get("chart_id")},
-                        )
+
+                chart["placeholder_text"] = st.text_input(
+                    "Placeholder label (for TBD values)", value=chart.get("placeholder_text", ""), key=f"pht_{cid}"
+                )
+                a1, a2 = st.columns(2)
+                with a1:
+                    if st.button("Remove from prompt", key=f"rm_{cid}"):
+                        chart["verification_status"] = "removed"
                         st.rerun()
-            with action_cols[1]:
-                if st.button("Placeholder OK", key=f"pok_{cid}"):
-                    chart["verification_status"] = "placeholder_approved"
-                    audit_entry = {
-                        "chart_id": chart.get("chart_id"),
-                        "source_file": chart.get("source_file"),
-                        "source_location": chart.get("source_location"),
-                        "source_type": "|".join(chart.get("data_source_types") or ["placeholder"]),
-                        "verified_by_user": True,
-                        "verified_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "final_chart_type": "placeholder",
-                        "allowed_values_only": True,
-                        "conflicts_resolved": [],
-                    }
-                    log_chart_audit_trail(session_id, provider, selected_style_key, audience, audit_entry)
-                    st.rerun()
-            with action_cols[2]:
-                if st.button("Remove chart", key=f"rm_{cid}"):
-                    chart["verification_status"] = "removed"
-                    st.rerun()
-            with action_cols[3]:
-                if st.button("Re-check conflicts", key=f"rc_{cid}"):
-                    recompute_chart_status_after_change(chart, cross_text, _cc)
-                    st.rerun()
+                with a2:
+                    if st.button("Refresh cross-check hints", key=f"rc_{cid}"):
+                        refresh_chart_reference_hints(chart, cross_text, _cc)
+                        st.rerun()
 
-    verified_charts_block = format_verified_charts_for_prompt(st.session_state.charts)
-
-    chart_blocked, chart_block_msg = chart_gate_blocks_generation(
-        wf_charts_on, st.session_state.charts
-    )
-    if wf_charts_on:
-        if chart_blocked:
-            st.error(f"Verification gate: {chart_block_msg}")
-        else:
-            st.success("Verification gate: all active charts are verified or placeholder-approved. ✅")
+    chart_reference_block = format_chart_reference_for_prompt(st.session_state.charts)
 
     st.markdown("---")
     tentative_prompt = ""
@@ -826,7 +759,7 @@ def main() -> None:
         audience,
         st.session_state.get("refinement_notes", ""),
         logo_extra,
-        verified_charts_block=verified_charts_block,
+        chart_reference_block=chart_reference_block,
     )
 
     with st.expander("View full prompt (audited locally only — never logged server-side)", expanded=False):
@@ -837,7 +770,6 @@ def main() -> None:
         or bool(inj_rule_ids)
         or bool(file_issues)
         or (mode == "compare" and len(set(compare_style_keys)) < 3)
-        or (wf_charts_on and chart_blocked)
     )
 
     if mode == "single":
@@ -884,8 +816,8 @@ def main() -> None:
             results: list[dict[str, Any]] = []
             logo_file = resolve_logo_path()
 
-            gen_verified_block = format_verified_charts_for_prompt(st.session_state.charts)
-            st.session_state.last_verified_charts_block = gen_verified_block
+            gen_ref_block = format_chart_reference_for_prompt(st.session_state.charts)
+            st.session_state.last_chart_reference_block = gen_ref_block
 
             refinement = str(st.session_state.get("refinement_notes", "") or "")
 
@@ -897,7 +829,7 @@ def main() -> None:
                     audience,
                     refinement,
                     logo_extra,
-                    verified_charts_block=gen_verified_block,
+                    chart_reference_block=gen_ref_block,
                 )
                 if store_prompt:
                     st.session_state.last_prompt = prompt
@@ -963,7 +895,7 @@ def main() -> None:
                         audience,
                         refinement,
                         logo_extra,
-                        verified_charts_block=gen_verified_block,
+                        chart_reference_block=gen_ref_block,
                     )
                     t_req = time.perf_counter()
                     try:
@@ -1065,23 +997,25 @@ def main() -> None:
             use_container_width=True,
             key="dl_single",
         )
-        with st.expander("📋 Post-generation chart QA (vision check vs verified data)", expanded=False):
-            has_vb = bool(str(st.session_state.get("last_verified_charts_block", "") or "").strip())
+        with st.expander("📋 Review charts in the generated image (vision QA)", expanded=True):
+            has_ref = bool(str(st.session_state.get("last_chart_reference_block", "") or "").strip())
             st.caption(
-                "Compares the generated image to the last verified chart block sent in the prompt (SPEC §19i). "
-                "Runs an extra vision call — leave disabled to save cost unless you need it."
+                "Inspects the **rendered** infographic for chart accuracy. "
+                + (
+                    "If you uploaded a publication reference, the model compares the image to that data."
+                    if has_ref
+                    else "No chart reference was in the last prompt — review is based only on pixels in the image."
+                )
             )
             allow_qa = st.checkbox(
-                "I want to run chart QA (uses vision API credits)",
+                "Run vision review (uses API credits)",
                 value=False,
                 key="post_gen_chart_qa_enable",
             )
-            if not has_vb:
-                st.info("No verified chart block was in the last prompt — QA is not applicable.")
             if st.button(
-                "Run automated QA",
+                "Run chart review",
                 key="btn_post_gen_chart_qa",
-                disabled=(not has_vb or not allow_qa),
+                disabled=(not allow_qa),
             ):
                 ok_q, err_q, client_q, _im_q, _cm_q = get_credentials()
                 if not ok_q or client_q is None:
@@ -1092,7 +1026,7 @@ def main() -> None:
                             client_q,
                             get_vision_model_name(),
                             st.session_state.last_image_bytes,
-                            str(st.session_state.get("last_verified_charts_block", "") or ""),
+                            str(st.session_state.get("last_chart_reference_block", "") or ""),
                         )
                         st.markdown(qa_txt)
                         audit_log(

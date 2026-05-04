@@ -13,7 +13,7 @@ def build_infographic_prompt(
     audience_key: str,
     refinement_notes: str,
     logo_instructions_extra: str,
-    verified_charts_block: str = "",
+    chart_reference_block: str = "",
 ) -> str:
     style = STYLES.get(style_id, STYLES["uab-craft-handmade"])
     audience_key = audience_key if audience_key in AUDIENCE_GUIDANCE else "patient"
@@ -79,8 +79,8 @@ def build_infographic_prompt(
 - All numeric labels, axis values, and legend entries must match the source EXACTLY.
 - Do NOT invent whiskers, quartile boundaries, outlier points, or any visual element not explicitly in the source.
 
-## Verified chart data (authoritative when present)
-{verified_charts_block if verified_charts_block.strip() else "[No verified chart object attached — follow Source Documents and explicit user numbers only; do not invent chart statistics.]"}
+## User-provided chart reference (from publications / uploads)
+{chart_reference_block if chart_reference_block.strip() else "[No chart figures or data files attached — use only Source Documents and user context for any numbers; do not invent statistics.]"}
 
 ## Audience-Specific Guidelines
 {aud}
