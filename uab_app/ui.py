@@ -299,7 +299,10 @@ def main() -> None:
                     "Image model",
                     value=os.environ.get("GEMINI_IMAGE_MODEL", GEMINI_DEFAULT_IMAGE_MODEL),
                     key="gemini_image_model",
-                    help="Use your image-capable Gemini model (default: nano-banana-pro).",
+                    help=(
+                        "Gemini image-generation model ID, e.g. gemini-3-pro-image-preview "
+                        "(Nano Banana Pro). Names like nano-banana-pro are rewritten to the API ID automatically."
+                    ),
                 )
 
         st.markdown("---")

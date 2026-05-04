@@ -7,6 +7,7 @@ import io
 import json
 import os
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
@@ -16,10 +17,20 @@ from PIL import Image
 
 from uab_app.constants import (
     BACKOFF_BASE_S,
+    GEMINI_IMAGE_MODEL_ALIASES,
     GEMINI_OPENAI_BASE_URL,
     IMAGE_GEN_TIMEOUT_S,
     MAX_GENERATION_ATTEMPTS,
 )
+
+
+def normalize_gemini_image_model_id(raw: str) -> str:
+    """Map marketing names → REST model IDs; strip optional models/ prefix."""
+    m = (raw or "").strip()
+    if m.startswith("models/"):
+        m = m[len("models/"):].strip()
+    key = m.lower().replace(" ", "-")
+    return GEMINI_IMAGE_MODEL_ALIASES.get(key, m)
 
 
 def resolve_logo_path() -> Optional[Path]:
@@ -92,6 +103,7 @@ def generate_image(
             n=n,
         )
     else:
+        model_id = normalize_gemini_image_model_id(model)
         req_body = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
@@ -99,7 +111,7 @@ def generate_image(
             },
         }
         req = urllib.request.Request(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent",
             data=json.dumps(req_body).encode("utf-8"),
             headers={
                 "x-goog-api-key": str(getattr(client, "_gemini_api_key", "")),
@@ -129,6 +141,15 @@ def generate_image(
 def user_friendly_error(exc: BaseException) -> str:
     if isinstance(exc, APITimeoutError):
         return "The image request timed out. Try again in a moment or simplify your prompt."
+    if isinstance(exc, urllib.error.HTTPError) and getattr(exc, "code", None) == 404:
+        return (
+            "Generation failed: HTTP 404 (not found). "
+            "**Gemini:** use an image-generation model ID such as "
+            "`gemini-3-pro-image-preview` (Nano Banana Pro), "
+            "`gemini-3.1-flash-image-preview`, or `gemini-2.5-flash-image` "
+            "(marketing name nano-banana-pro maps to gemini-3-pro-image-preview in this app). "
+            "**OpenAI/Azure:** verify the image model/deployment exists for your API key/account."
+        )
     msg = str(exc).strip()
     if len(msg) > 220:
         msg = msg[:217] + "..."

@@ -10,7 +10,18 @@ OPENAI_DEFAULT_IMAGE_MODEL = "gpt-image-2"
 OPENAI_DEFAULT_CHAT_MODEL = "gpt-4o-mini"
 OPENAI_DEFAULT_VISION_MODEL = "gpt-4o"
 GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
-GEMINI_DEFAULT_IMAGE_MODEL = "nano-banana-pro"
+# Image generation uses generateContent — model must be a real API resource ID.
+# Nano Banana Pro = gemini-3-pro-image-preview (see Gemini API image-gen docs).
+GEMINI_DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
+
+# Friendly / marketing aliases → official model IDs (404 if wrong ID is passed to REST).
+GEMINI_IMAGE_MODEL_ALIASES = {
+    "nano-banana-pro": "gemini-3-pro-image-preview",
+    "nano-banana-pro-preview": "gemini-3-pro-image-preview",
+    "nano-banana": "gemini-2.5-flash-image",
+    "nano-banana-2": "gemini-3.1-flash-image-preview",
+    "nano-banana-flash-image": "gemini-3.1-flash-image-preview",
+}
 GEMINI_DEFAULT_CHAT_MODEL = "gemini-2.5-pro"
 GEMINI_DEFAULT_VISION_MODEL = "gemini-2.5-pro"
 
