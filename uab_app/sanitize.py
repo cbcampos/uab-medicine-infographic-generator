@@ -26,11 +26,20 @@ def strip_control_chars(s: str) -> str:
     )
 
 
-def detect_prompt_injection(text: str) -> list[str]:
+def detect_prompt_injection(text: str, source: str = "user") -> list[str]:
     flags: list[str] = []
     for rule_id, _label, pat in INJECTION_RULES:
         if pat.search(text):
             flags.append(rule_id)
+    # Uploaded documents can include OCR/artifact strings like "system:"
+    # that are not intentional prompt attacks. Keep user-typed text strict.
+    if source == "document":
+        relaxed_allow_false_positives = {
+            "fake_system_role",
+            "instruction_inst_tag",
+            "template_injection_delimiters",
+        }
+        flags = [f for f in flags if f not in relaxed_allow_false_positives]
     return flags
 
 
@@ -39,9 +48,9 @@ def injection_labels_for_ids(rule_ids: list[str]) -> list[str]:
     return [id_to_label.get(r, r) for r in rule_ids]
 
 
-def sanitize_input(text: str) -> tuple[str, list[str]]:
+def sanitize_input(text: str, source: str = "user") -> tuple[str, list[str]]:
     cleaned = strip_control_chars(text)
-    flags = detect_prompt_injection(cleaned)
+    flags = detect_prompt_injection(cleaned, source=source)
     return cleaned, flags
 
 

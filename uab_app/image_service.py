@@ -392,6 +392,212 @@ def generate_with_retry(
     raise last_err
 
 
+def _vision_chat_message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(parts).strip()
+    return str(content).strip()
+
+
+def build_guided_refinement_notes(
+    client: OpenAI | AzureOpenAI,
+    vision_model: str,
+    current_image_bytes: bytes,
+    user_notes: str,
+    audience: str,
+) -> str:
+    """Use vision to convert free-form notes into actionable, image-grounded edits."""
+    img_b64 = base64.b64encode(current_image_bytes).decode("ascii")
+    prompt = (
+        "You are preparing an image refinement plan for an infographic generator.\n"
+        f"Audience: {audience}\n"
+        "Given the CURRENT IMAGE and USER REQUESTED CHANGES, output concise edit instructions.\n"
+        "Return plain text with exactly these sections:\n"
+        "KEEP:\n- ...\n"
+        "CHANGE:\n- ...\n"
+        "DO NOT CHANGE:\n- ...\n"
+        "RULES:\n"
+        "- Be specific about layout regions and text changes.\n"
+        "- Preserve factual claims unless user explicitly asks to change them.\n"
+        "- Avoid adding new unsupported numbers.\n"
+        f"USER REQUESTED CHANGES:\n{(user_notes or '').strip()}\n"
+    )
+    resp = client.chat.completions.create(
+        model=vision_model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                ],
+            }
+        ],
+        temperature=0.1,
+        max_tokens=700,
+    )
+    content = resp.choices[0].message.content if resp.choices else ""
+    return _vision_chat_message_text(content)
+
+
+def _parse_refinements_scan_json(raw: str) -> dict[str, Any]:
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        pass
+    # Allow optional ```json fences
+    fence = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
+    if fence:
+        try:
+            data = json.loads(fence.group(1))
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            pass
+    brace = re.search(r"(\{[\s\S]*\})", text)
+    if brace:
+        try:
+            data = json.loads(brace.group(1))
+            return data if isinstance(data, dict) else {}
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def normalize_refinements_scan(data: dict[str, Any]) -> dict[str, Any]:
+    """Coerce vision JSON into stable keys."""
+    grade = str(data.get("letter_grade") or data.get("grade") or "").strip()
+    refs = data.get("recommended_refinements") or data.get("refinements") or []
+    if not isinstance(refs, list):
+        refs = []
+    refs = [str(x).strip() for x in refs if str(x).strip()]
+    strengths = data.get("strengths") or []
+    if not isinstance(strengths, list):
+        strengths = []
+    strengths = [str(x).strip() for x in strengths if str(x).strip()]
+    issues = data.get("issues") or []
+    if not isinstance(issues, list):
+        issues = []
+    issues = [str(x).strip() for x in issues if str(x).strip()]
+    summary = str(data.get("alignment_summary") or data.get("summary") or "").strip()
+    fidelity = str(data.get("fidelity_notes") or data.get("source_fidelity") or "").strip()
+    return {
+        "letter_grade": grade or "?",
+        "alignment_summary": summary,
+        "strengths": strengths,
+        "issues": issues,
+        "recommended_refinements": refs,
+        "fidelity_notes": fidelity,
+    }
+
+
+def format_refinements_scan_for_notes(scan: dict[str, Any]) -> str:
+    """Turn scan output into text suitable for the refinement notes field."""
+    s = normalize_refinements_scan(scan)
+    lines: list[str] = [
+        f"[Refinements scan — letter grade: {s['letter_grade']}]",
+        "",
+        "Suggested changes for the next generation:",
+    ]
+    for r in s["recommended_refinements"]:
+        lines.append(f"- {r}")
+    if not s["recommended_refinements"]:
+        lines.append(
+            "- (No specific refinements returned — re-run the scan or add manual notes.)"
+        )
+    return "\n".join(lines).strip()
+
+
+def run_refinements_scan_vision(
+    client: OpenAI | AzureOpenAI,
+    vision_model: str,
+    image_bytes: bytes,
+    scan_context: dict[str, str],
+) -> dict[str, Any]:
+    """
+    Vision review: compare the rendered infographic to user intent and source excerpts.
+    Returns a dict with letter_grade, alignment_summary, strengths, issues,
+    recommended_refinements, fidelity_notes.
+    """
+    img_b64 = base64.b64encode(image_bytes).decode("ascii")
+    ctx_lines = [
+        "## Generation context (ground truth for alignment)",
+        f"Audience: {scan_context.get('audience', '')}",
+        f"Visual style: {scan_context.get('style_name', '')}",
+        "## User-context / intent",
+        scan_context.get("user_context", "")[:8000],
+        "## Source excerpt (cleaned documents; do not invent beyond this)",
+        scan_context.get("source_excerpt", "")[:12000],
+        "## Chart reference excerpt (if any)",
+        scan_context.get("chart_reference_excerpt", "")[:8000],
+        "## Refinement notes used for this generation",
+        scan_context.get("refinement_notes_used", "")[:4000],
+        "## Effective image prompt excerpt (what the image model was asked)",
+        scan_context.get("effective_prompt_excerpt", "")[:14000],
+    ]
+    instruction = (
+        "You are a strict reviewer of a research/clinical infographic image.\n"
+        "Read the attached infographic image carefully.\n"
+        "Compare what is VISUALLY shown (headings, bullets, numbers, charts) to the user intent and "
+        "source excerpt above.\n"
+        "Flag missing required elements, wrong emphasis, audience mismatch, illegible text, clutter, "
+        "duplicated or conflicting numbers, and any numbers/claims that are not supported by the excerpt.\n"
+        "Ignore the bottom-right corner: a real logo may be composited there by the app; do not grade "
+        "logo rendering quality.\n"
+        "Return ONE JSON object ONLY (no markdown) with EXACTLY these keys:\n"
+        '"letter_grade": string (choose one of: A+, A, A-, B+, B, B-, C+, C, C-, D, F)\n'
+        '"alignment_summary": string (2-4 sentences)\n'
+        '"strengths": array of strings (2-5 short bullets)\n'
+        '"issues": array of strings (2-7 short bullets)\n'
+        '"recommended_refinements": array of strings (5-12 concise, actionable instructions for the '
+        "NEXT image generation; reference regions like TOP / LEFT / RIGHT / BOTTOM; do not repeat the whole brief)\n"
+        '"fidelity_notes": string (optional; call out any numeric or citation mismatches you notice)\n'
+    )
+    user_text = instruction + "\n" + "\n".join(ctx_lines)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+            ],
+        }
+    ]
+    resp = None
+    try:
+        resp = client.chat.completions.create(
+            model=vision_model,
+            messages=messages,
+            temperature=0.15,
+            max_tokens=1400,
+            response_format={"type": "json_object"},
+        )
+    except BaseException:
+        resp = client.chat.completions.create(
+            model=vision_model,
+            messages=messages,
+            temperature=0.15,
+            max_tokens=1400,
+        )
+    content = resp.choices[0].message.content if resp and resp.choices else ""
+    raw = _vision_chat_message_text(content)
+    parsed = _parse_refinements_scan_json(raw)
+    if not parsed:
+        raise RuntimeError(
+            "Refinements scan did not return valid JSON. "
+            f"Raw (truncated): {raw[:400]!r}"
+        )
+    return normalize_refinements_scan(parsed)
+
+
 def fetch_image_bytes(image_url_or_data: str) -> bytes:
     if image_url_or_data.startswith("data:"):
         b64 = image_url_or_data.split(",", 1)[1]
@@ -431,22 +637,22 @@ def composite_logo_footer(image_bytes: bytes, logo_path: Path, style_key: str = 
     lx = w - new_w - margin
     ly = h - new_h - margin
 
-    # White backing card for readability/compliance over busy backgrounds.
-    # Keep this tight to avoid a tall white block under the logo.
+    # Opaque white knockout region for compliance:
+    # fully hide any model-generated pseudo-logo/wordmark underneath.
     if is_bold_graphic:
-        card_pad_x = max(int(new_w * 0.05), 4)
-        card_pad_y = max(int(new_h * 0.08), 4)
+        card_pad_x = max(int(new_w * 0.08), 8)
+        card_pad_y = max(int(new_h * 0.12), 6)
     elif is_chalkboard:
-        card_pad_x = max(int(new_w * 0.06), 5)
-        card_pad_y = max(int(new_h * 0.10), 5)
+        card_pad_x = max(int(new_w * 0.10), 10)
+        card_pad_y = max(int(new_h * 0.14), 8)
     else:
-        card_pad_x = max(int(new_w * 0.08), 6)
-        card_pad_y = max(int(new_h * 0.14), 6)
+        card_pad_x = max(int(new_w * 0.10), 10)
+        card_pad_y = max(int(new_h * 0.16), 8)
     card_x0 = max(0, lx - card_pad_x)
     card_y0 = max(0, ly - card_pad_y)
     card_x1 = min(w, lx + new_w + card_pad_x)
     card_y1 = min(h, ly + new_h + card_pad_y)
-    card = Image.new("RGBA", (card_x1 - card_x0, card_y1 - card_y0), (255, 255, 255, 235))
+    card = Image.new("RGBA", (card_x1 - card_x0, card_y1 - card_y0), (255, 255, 255, 255))
     img.alpha_composite(card, (card_x0, card_y0))
 
     img.paste(logo_r, (lx, ly), logo_r)

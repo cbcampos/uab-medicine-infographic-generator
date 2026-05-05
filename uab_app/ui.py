@@ -48,6 +48,7 @@ from uab_app.charts import (
     run_post_generation_chart_qa,
 )
 from uab_app.cleanup import cache_key_for_raw, clean_document_text_llm
+from uab_app.cleanup import infer_source_profile_llm
 from uab_app.constants import (
     ALLOWED_UPLOAD_EXTENSIONS,
     CHART_EXTRACTION_CONTEXT_MAX_CHARS,
@@ -67,12 +68,15 @@ from uab_app.constants import (
 from uab_app.image_service import (
     AZURE_IMAGE_PROMPT_MAX_CHARS,
     AZURE_IMAGE_PROMPT_SAFETY_MARGIN,
+    build_guided_refinement_notes,
     composite_logo_footer,
     fetch_image_bytes,
+    format_refinements_scan_for_notes,
     generate_with_retry,
     make_client,
     optimize_azure_image_prompt,
     resolve_logo_path,
+    run_refinements_scan_vision,
     user_friendly_error,
 )
 from uab_app.parsers import extract_document_text
@@ -156,6 +160,16 @@ def init_session_state() -> None:
         st.session_state.last_effective_prompt = ""
     if "last_effective_prompt_sha256" not in st.session_state:
         st.session_state.last_effective_prompt_sha256 = ""
+    if "last_inferred_profile" not in st.session_state:
+        st.session_state.last_inferred_profile = {}
+    if "refine_generate_now" not in st.session_state:
+        st.session_state.refine_generate_now = False
+    if "last_guided_refine_plan" not in st.session_state:
+        st.session_state.last_guided_refine_plan = ""
+    if "last_refinements_scan" not in st.session_state:
+        st.session_state.last_refinements_scan = None
+    if "last_refinements_scan_context" not in st.session_state:
+        st.session_state.last_refinements_scan_context = {}
     if "last_image_bytes" not in st.session_state:
         st.session_state.last_image_bytes = None
     if "generation_history" not in st.session_state:
@@ -530,7 +544,7 @@ def main() -> None:
             if nbytes > MAX_UPLOAD_BYTES:
                 file_issues.append(f"`{f.name}` exceeds 10MB")
 
-    sanitized_context, inj_flags_context = sanitize_input(user_context)
+    sanitized_context, inj_flags_context = sanitize_input(user_context, source="user")
 
     extracted_preview: list[tuple[str, str]] = []
     for f in files_list:
@@ -539,7 +553,7 @@ def main() -> None:
             extracted_preview.append((f.name, extract_document_text(f)))
 
     combined_docs = "\n".join(t for _, t in extracted_preview)
-    _, inj_flags_docs = sanitize_input(combined_docs)
+    _, inj_flags_docs = sanitize_input(combined_docs, source="document")
     inj_rule_ids = sorted(set(inj_flags_context + inj_flags_docs))
 
     if inj_rule_ids:
@@ -556,7 +570,7 @@ def main() -> None:
     with st.expander("📖 Extracted document preview", expanded=False):
         if extracted_preview:
             for name, text in extracted_preview:
-                preview = sanitize_input(text)[0][:1500]
+                preview = sanitize_input(text, source="document")[0][:1500]
                 st.markdown(f"**{name}** ({len(text)} chars)")
                 st.text(preview + ("..." if len(text) > 1500 else ""))
         else:
@@ -631,23 +645,113 @@ def main() -> None:
         cleaned: list[str] = []
         notes: list[str] = []
         cache: dict[str, str] = st.session_state.cleaned_docs_cache
+        cleanup_targets = []
         for name, raw in extracted_preview:
-            c, _ = sanitize_input(raw)
+            c, _ = sanitize_input(raw, source="document")
             if not c.strip():
                 continue
+            cleanup_targets.append((name, c))
+
+        total = len(cleanup_targets)
+        if total == 0:
+            cleaning_panel_slot.empty()
+            return cleaned, notes
+
+        cleaning_started = time.perf_counter()
+        cleaned_count = 0
+        detail_lines: list[str] = []
+
+        def run_cleanup_with_live_timer(
+            name: str,
+            text_in: str,
+            idx: int,
+            total_docs: int,
+        ) -> Any:
+            result_holder: dict[str, Any] = {"value": None, "error": None}
+
+            def _worker() -> None:
+                try:
+                    result_holder["value"] = clean_document_text_llm(
+                        client, provider, chat_model, text_in
+                    )
+                except BaseException as ex:
+                    result_holder["error"] = ex
+
+            worker = threading.Thread(target=_worker, daemon=True)
+            worker.start()
+            while worker.is_alive():
+                elapsed_total_local = int(time.perf_counter() - cleaning_started)
+                mm_local = elapsed_total_local // 60
+                ss_local = elapsed_total_local % 60
+                set_progress(
+                    progress_bar,
+                    status_label,
+                    f"Cleaning document text ({idx}/{total_docs})",
+                    0.12 + (0.23 * ((idx - 1) / max(total_docs, 1))),
+                )
+                cleaning_panel_slot.info(
+                    f"Cleaning documents: {idx}/{total_docs} in progress ({mm_local:02d}:{ss_local:02d} elapsed)  \n"
+                    f"Current file: `{name}`"
+                )
+                time.sleep(1)
+
+            worker.join()
+            if result_holder["error"] is not None:
+                raise result_holder["error"]
+            return result_holder["value"]
+
+        for idx, (name, c) in enumerate(cleanup_targets, start=1):
+            elapsed_total = int(time.perf_counter() - cleaning_started)
+            mm = elapsed_total // 60
+            ss = elapsed_total % 60
+            set_progress(
+                progress_bar,
+                status_label,
+                f"Cleaning document text ({idx}/{total})",
+                0.12 + (0.23 * ((idx - 1) / max(total, 1))),
+            )
+            cleaning_panel_slot.info(
+                f"Cleaning documents: {idx}/{total} in progress ({mm:02d}:{ss:02d} elapsed)  \n"
+                f"Current file: `{name}`"
+            )
             ck = cache_key_for_raw(name, c)
             if ck in cache:
                 cleaned.append(cache[ck])
+                cleaned_count += 1
+                detail_lines.append(f"✅ `{name}` cleaned from cache")
+                cleaning_panel_slot.info(
+                    f"Cleaning documents: {cleaned_count}/{total} complete ({mm:02d}:{ss:02d} elapsed)"
+                )
                 continue
-            set_progress(progress_bar, status_label, "Cleaning document text", 0.35)
-            result = clean_document_text_llm(client, provider, chat_model, c)
+            doc_started = time.perf_counter()
+            result = run_cleanup_with_live_timer(name, c, idx, total)
             cleaned.append(result.text)
             cache[ck] = result.text
+            cleaned_count += 1
+            doc_elapsed = int(time.perf_counter() - doc_started)
+            if result.truncated_input:
+                detail_lines.append(
+                    f"⚠️ `{name}` cleaned in {result.chunks_processed} chunk(s) ({doc_elapsed}s)"
+                )
+            else:
+                detail_lines.append(f"✅ `{name}` cleaned ({doc_elapsed}s)")
             if result.truncated_input:
                 notes.append(
                     f"`{name}`: large document — sanitized in {result.chunks_processed} chunk(s); "
                     "review the preview for completeness."
                 )
+            elapsed_total = int(time.perf_counter() - cleaning_started)
+            mm = elapsed_total // 60
+            ss = elapsed_total % 60
+            cleaning_panel_slot.info(
+                f"Cleaning documents: {cleaned_count}/{total} complete ({mm:02d}:{ss:02d} elapsed)"
+            )
+            if detail_lines:
+                cleaning_detail_slot.markdown("  \n".join(detail_lines[-6:]))
+
+        cleaning_panel_slot.success(
+            f"Document cleaning complete: {cleaned_count}/{total} file(s) processed."
+        )
         return cleaned, notes
 
     # ── Publication chart / data reference (optional, no pre-verify step) ──
@@ -1162,6 +1266,7 @@ def main() -> None:
             "the application may composite the approved logo file onto a white footer after generation.\n"
         )
 
+    inferred_profile_preview: dict[str, Any] = {}
     tentative_prompt = build_infographic_prompt(
         selected_style_key if mode == "single" else list(STYLES.keys())[0],
         sanitized_context,
@@ -1170,6 +1275,7 @@ def main() -> None:
         st.session_state.get("refinement_notes", ""),
         logo_extra,
         chart_reference_block=chart_reference_block,
+        inferred_profile=inferred_profile_preview,
     )
 
     with st.expander("View full prompt (audited locally only — never logged server-side)", expanded=False):
@@ -1222,6 +1328,22 @@ def main() -> None:
             )
         else:
             st.caption("No generation run yet in this session.")
+
+    with st.expander("Inferred source profile (last run)", expanded=False):
+        prof = st.session_state.get("last_inferred_profile", {}) or {}
+        if isinstance(prof, dict) and prof:
+            st.caption(
+                "Normalized citation fields and inferred mode used for prompt building."
+            )
+            st.markdown(
+                f"- Citation title: `{str(prof.get('citation_title','') or '[not inferred]')}`\n"
+                f"- Citation journal: `{str(prof.get('citation_journal','') or '[not inferred]')}`\n"
+                f"- Citation year: `{str(prof.get('citation_year','') or '[not inferred]')}`\n"
+                f"- Citation authors: `{str(prof.get('citation_authors_short','') or '[not inferred]')}`\n"
+                f"- Non-numeric mode: `{'ON' if bool(prof.get('non_numeric_mode')) else 'OFF'}`"
+            )
+        else:
+            st.caption("No inferred profile yet. Generate once to inspect inferred fields.")
 
     credential_issue = ""
     if provider == "openai":
@@ -1286,14 +1408,30 @@ def main() -> None:
             disabled=gen_disabled,
         )
 
+    # Allow refinement flow to trigger generation without requiring users to scroll back up.
+    if mode == "single" and st.session_state.pop("refine_generate_now", False):
+        generate_btn = True
+
     progress_bar = st.progress(0.0)
     status_label = st.empty()
     error_box = st.empty()
     image_preview_slot = st.empty()
     timer_slot = st.empty()
+    cleaning_panel_slot = st.empty()
+    cleaning_detail_slot = st.empty()
 
     if generate_btn:
         render_generation_placeholder(image_preview_slot, "Creating infographic...")
+        # Prevent stale compare outputs from appearing if a new run fails/aborts.
+        if mode == "compare":
+            st.session_state.comparison_results = []
+        else:
+            # Prevent stale single output from appearing if a new run fails/aborts.
+            st.session_state.last_image_bytes = None
+            st.session_state.last_fidelity_qa_pass = False
+            st.session_state.last_fidelity_qa_result = None
+            st.session_state.last_post_gen_chart_qa_text = ""
+            st.session_state.last_refinements_scan = None
         ok, err_msg, client, image_model, chat_model = get_credentials()
         if not ok:
             error_box.error(err_msg)
@@ -1310,8 +1448,38 @@ def main() -> None:
                 cleaned_docs, cleanup_notes = run_cleanups(client, chat_model)
             else:
                 cleaned_docs = []
+                cleaning_panel_slot.empty()
+                cleaning_detail_slot.empty()
             for line in cleanup_notes:
                 st.info(line)
+
+            set_progress(progress_bar, status_label, "Inferring objective/topic", 0.40)
+            inferred = infer_source_profile_llm(
+                client=client,
+                provider=provider,
+                chat_model=chat_model,
+                user_context=sanitized_context,
+                cleaned_document_texts=cleaned_docs,
+                audience=audience,
+            )
+            inferred_profile = {
+                "topic": inferred.topic,
+                "objective": inferred.objective,
+                "source_type": inferred.source_type,
+                "why_matters": inferred.why_matters,
+                "key_points": inferred.key_points,
+                "recommended_sections": inferred.recommended_sections,
+                "chart_guidance": inferred.chart_guidance,
+                "citation_title": inferred.citation_title,
+                "citation_journal": inferred.citation_journal,
+                "citation_year": inferred.citation_year,
+                "citation_authors_short": inferred.citation_authors_short,
+                "citation_footer": inferred.citation_footer,
+                "implications_panel": inferred.implications_panel,
+                "claim_evidence_pairs": inferred.claim_evidence_pairs,
+                "non_numeric_mode": inferred.non_numeric_mode,
+            }
+            st.session_state.last_inferred_profile = inferred_profile
 
             set_progress(progress_bar, status_label, "Building prompt", 0.45)
 
@@ -1335,6 +1503,7 @@ def main() -> None:
                     refinement,
                     logo_extra,
                     chart_reference_block=gen_ref_block,
+                    inferred_profile=inferred_profile,
                 )
                 if provider == "azure":
                     max_prompt_len = (
@@ -1350,10 +1519,6 @@ def main() -> None:
                         effective_prompt.encode("utf-8")
                     ).hexdigest()
                 t_req = time.perf_counter()
-
-                def submit_progress(attempt: int) -> None:
-                    frac = 0.55 + 0.05 * attempt
-                    set_progress(progress_bar, status_label, "Submitting to API", frac)
 
                 def run_with_visual_timer(
                     fn: Any,
@@ -1417,7 +1582,7 @@ def main() -> None:
                             effective_prompt,
                             size,
                             quality,
-                            progress_callback=submit_progress,
+                            progress_callback=None,
                         )
                     )
                     set_progress(progress_bar, status_label, "Fetching image", 0.82)
@@ -1467,6 +1632,7 @@ def main() -> None:
                         refinement,
                         logo_extra,
                         chart_reference_block=gen_ref_block,
+                        inferred_profile=inferred_profile,
                     )
                     if provider == "azure":
                         max_prompt_len = (
@@ -1475,6 +1641,10 @@ def main() -> None:
                         effective_prompt = optimize_azure_image_prompt(prompt, max_prompt_len)
                     else:
                         effective_prompt = prompt
+                    prompt_sha = hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
+                    source_docs_sha = hashlib.sha256(
+                        "\n\n".join(cleaned_docs).encode("utf-8")
+                    ).hexdigest()
                     t_req = time.perf_counter()
                     try:
                         image_ref = generate_with_retry(
@@ -1503,6 +1673,8 @@ def main() -> None:
                             "style_key": sid,
                             "bytes": raw_bytes,
                             "prompt_len": len(prompt),
+                            "prompt_sha256": prompt_sha,
+                            "source_docs_sha256": source_docs_sha,
                         }
                     except BaseException as exc:
                         latency = int((time.perf_counter() - t_req) * 1000)
@@ -1559,6 +1731,12 @@ def main() -> None:
                         by_sid[row["style_key"]] = row
                 timer_slot.empty()
                 results = [by_sid[sid] for sid in styles_to_run]
+                # Persist one effective prompt hash so users can verify which prompt family
+                # the compare run used.
+                if results:
+                    st.session_state.last_effective_prompt_sha256 = results[0].get(
+                        "prompt_sha256", ""
+                    )
                 set_progress(progress_bar, status_label, "Displaying", 1.0)
             else:
                 for si, style_id in enumerate(styles_to_run):
@@ -1571,6 +1749,20 @@ def main() -> None:
                 st.session_state.last_fidelity_qa_pass = False
                 st.session_state.last_fidelity_qa_result = None
                 st.session_state.last_post_gen_chart_qa_text = ""
+                _sk = str(results[0].get("style_key") or selected_style_key)
+                _st_meta = STYLES.get(_sk, {})
+                st.session_state.last_refinements_scan_context = {
+                    "audience": audience,
+                    "style_name": str(_st_meta.get("name") or _sk),
+                    "user_context": sanitized_context or "",
+                    "source_excerpt": "\n\n".join(cleaned_docs) if cleaned_docs else "",
+                    "chart_reference_excerpt": gen_ref_block or "",
+                    "refinement_notes_used": refinement or "",
+                    "effective_prompt_excerpt": str(
+                        st.session_state.get("last_effective_prompt") or ""
+                    ),
+                }
+                st.session_state.last_refinements_scan = None
                 st.session_state.generation_history.append(
                     {
                         "thumb_bytes": results[0]["bytes"],
@@ -1586,11 +1778,23 @@ def main() -> None:
             st.success("Done.")
             image_preview_slot.empty()
             timer_slot.empty()
+            cleaning_panel_slot.empty()
+            cleaning_detail_slot.empty()
 
         except BaseException as exc:
             error_box.error(user_friendly_error(exc))
             image_preview_slot.empty()
             timer_slot.empty()
+            cleaning_panel_slot.empty()
+            cleaning_detail_slot.empty()
+            if mode == "compare":
+                st.session_state.comparison_results = []
+            else:
+                st.session_state.last_image_bytes = None
+                st.session_state.last_fidelity_qa_pass = False
+                st.session_state.last_fidelity_qa_result = None
+                st.session_state.last_post_gen_chart_qa_text = ""
+                st.session_state.last_refinements_scan = None
             audit_log(
                 session_id,
                 provider,
@@ -1704,6 +1908,119 @@ def main() -> None:
             if publication_fidelity_mode and st.session_state.get("last_fidelity_qa_result") is not None:
                 st.caption("Latest publication-fidelity result")
                 st.json(st.session_state.last_fidelity_qa_result)
+
+        _scan_open = bool(
+            (
+                isinstance(st.session_state.get("last_refinements_scan"), dict)
+                and st.session_state.last_refinements_scan
+            )
+            or bool(st.session_state.get("refinements_scan_allow", False))
+        )
+        with st.expander(
+            "🔎 Refinements scan (vision — align infographic to intent)",
+            expanded=_scan_open,
+        ):
+            st.caption(
+                "After generation, the vision model reads **this PNG** (with composited logo) and scores "
+                "how well it matches your context, cleaned sources, and the prompt from the **last successful** "
+                "single-mode run. Enables one-click edits for the next generation."
+            )
+            scan_ctx_raw = st.session_state.get("last_refinements_scan_context") or {}
+            scan_ctx: dict[str, str] = {
+                str(k): str(v) if v is not None else ""
+                for k, v in scan_ctx_raw.items()
+            }
+            if not scan_ctx.get("effective_prompt_excerpt", "").strip():
+                st.warning(
+                    "Generate once in single mode so the app can snapshot your prompt "
+                    "and sources for this scan."
+                )
+            scan_allow = st.checkbox(
+                "Run refinements scan (uses API credits)",
+                value=False,
+                key="refinements_scan_allow",
+            )
+            if st.button(
+                "Run refinements scan",
+                key="btn_refinements_scan",
+                disabled=not scan_allow,
+            ):
+                ok_s, err_s, client_s, _im_s, _cm_s = get_credentials()
+                if not ok_s or client_s is None:
+                    st.error(err_s or "Configure API keys for refinements scan.")
+                elif not st.session_state.get("last_image_bytes"):
+                    st.error("Generate an image first.")
+                else:
+                    try:
+                        with st.spinner("Scanning infographic with vision model…"):
+                            scan_result = run_refinements_scan_vision(
+                                client_s,
+                                get_vision_model_name(),
+                                st.session_state.last_image_bytes,
+                                scan_ctx,
+                            )
+                        st.session_state.last_refinements_scan = scan_result
+                        audit_log(
+                            session_id,
+                            provider,
+                            selected_style_key,
+                            audience,
+                            True,
+                            0,
+                            "refinements_scan_vision",
+                        )
+                        st.success("Refinements scan complete.")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(user_friendly_error(ex))
+
+            scan_data = st.session_state.get("last_refinements_scan")
+            if isinstance(scan_data, dict) and scan_data:
+                lg = scan_data.get("letter_grade") or "?"
+                st.markdown(f"#### Letter grade: **{lg}**")
+                if (scan_data.get("alignment_summary") or "").strip():
+                    st.markdown("**Summary**")
+                    st.markdown(scan_data["alignment_summary"])
+                if scan_data.get("strengths"):
+                    st.markdown("**Strengths**")
+                    for s in scan_data["strengths"]:
+                        st.markdown(f"- {s}")
+                if scan_data.get("issues"):
+                    st.markdown("**Issues**")
+                    for s in scan_data["issues"]:
+                        st.markdown(f"- {s}")
+                if (scan_data.get("fidelity_notes") or "").strip():
+                    st.markdown("**Source / number fidelity**")
+                    st.markdown(scan_data["fidelity_notes"])
+                st.markdown("**Recommended refinements (next prompt)**")
+                for r in scan_data.get("recommended_refinements") or []:
+                    st.markdown(f"- {r}")
+
+                apply_txt = format_refinements_scan_for_notes(scan_data)
+                ap1, ap2 = st.columns(2)
+                with ap1:
+                    if st.button(
+                        "Apply refinements to notes field",
+                        key="btn_apply_scan_notes",
+                        use_container_width=True,
+                        type="secondary",
+                    ):
+                        st.session_state.refinement_notes = apply_txt
+                        st.session_state.refinement_loop_area = apply_txt
+                        st.success("Copied into refinement notes (scroll down to edit if needed).")
+                        st.rerun()
+                with ap2:
+                    if st.button(
+                        "Apply refinements & generate now",
+                        key="btn_apply_scan_generate",
+                        use_container_width=True,
+                        type="primary",
+                    ):
+                        st.session_state.refinement_notes = apply_txt
+                        st.session_state.refinement_loop_area = apply_txt
+                        st.session_state.refine_generate_now = True
+                        st.rerun()
+
         refinement = st.text_area(
             "Refinement notes (next generation)",
             key="refinement_loop_area",
@@ -1714,14 +2031,67 @@ def main() -> None:
             ),
         )
         st.caption("Tip: include what to change, what to keep fixed, and which section it applies to.")
+        if st.session_state.get("last_guided_refine_plan", "").strip():
+            with st.expander("Latest guided refinement plan", expanded=False):
+                st.code(st.session_state.get("last_guided_refine_plan", ""))
+        rb1, rb2 = st.columns(2)
+        with rb1:
+            if st.button(
+                "🔁 Save refinement notes",
+                key="btn_refine",
+                type="secondary",
+                help="Applies your notes to the next prompt.",
+                use_container_width=True,
+            ):
+                st.session_state.refinement_notes = refinement
+                st.rerun()
+        with rb2:
+            if st.button(
+                "⚡ Save + Generate now",
+                key="btn_refine_generate_now",
+                type="primary",
+                help="Saves notes and immediately starts a new generation.",
+                use_container_width=True,
+            ):
+                st.session_state.refinement_notes = refinement
+                st.session_state.refine_generate_now = True
+                st.rerun()
         if st.button(
-            "🔁 Save refinement notes and prepare next run",
-            key="btn_refine",
+            "🧭 Guided refine (use current image)",
+            key="btn_guided_refine_generate",
             type="secondary",
-            help="Applies your notes to the next prompt. Click “Generate infographic” again.",
+            help="Uses the current image plus your notes to build a structured edit plan, then regenerates.",
+            use_container_width=True,
         ):
-            st.session_state.refinement_notes = refinement
-            st.rerun()
+            if not refinement.strip():
+                st.warning("Add refinement notes first, then run guided refine.")
+            else:
+                ok_g, err_g, client_g, _im_g, _cm_g = get_credentials()
+                if not ok_g or client_g is None:
+                    st.error(err_g or "Configure API credentials first.")
+                elif not st.session_state.get("last_image_bytes"):
+                    st.error("Generate an image first so guided refine can analyze it.")
+                else:
+                    try:
+                        plan = build_guided_refinement_notes(
+                            client=client_g,
+                            vision_model=get_vision_model_name(),
+                            current_image_bytes=st.session_state.last_image_bytes,
+                            user_notes=refinement,
+                            audience=audience,
+                        )
+                        st.session_state.last_guided_refine_plan = plan
+                        st.session_state.refinement_notes = (
+                            f"{refinement.strip()}\n\n[GUIDED REFINEMENT PLAN]\n{plan}"
+                        )
+                        st.session_state.refine_generate_now = True
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(user_friendly_error(ex))
+        st.caption(
+            "Guided refine uses vision-guided prompt refinement from the current image "
+            "(not direct image-edit endpoint replacement)."
+        )
 
     # ── Output: comparison ──
     if st.session_state.comparison_results and mode == "compare":
@@ -1733,6 +2103,8 @@ def main() -> None:
             r = st.session_state.comparison_results[i]
             with col:
                 st.caption(STYLES[r["style_key"]]["name"])
+                if r.get("prompt_sha256"):
+                    st.caption(f"Prompt hash: `{str(r['prompt_sha256'])[:12]}`")
                 st.image(r["bytes"], use_container_width=True)
                 st.download_button(
                     "Download",
