@@ -76,10 +76,12 @@ def make_client(
         )
         setattr(c, "_gemini_api_key", api_key)
         return c
+    normalized = normalize_azure_endpoint(endpoint) if endpoint else ""
+    print(f"[DEBUG] Azure client created with endpoint: {normalized}, api_version: {api_version or '2024-12-01-preview'}")
     return AzureOpenAI(
         api_key=api_key,
         api_version=api_version or "2024-12-01-preview",
-        azure_endpoint=normalize_azure_endpoint(endpoint) if endpoint else "",
+        azure_endpoint=normalized,
         timeout=timeout,
     )
 
@@ -101,8 +103,8 @@ def generate_image(
     size: str,
     quality: str,
 ) -> str:
+    print(f"[DEBUG] generate_image called: provider={provider}, model={model}, size={size}, quality={quality}")
     n = 1
-    logger.info(f"Generating image with provider={provider}, model={model}, size={size}, quality={quality}")
     
     if provider == "openai":
         logger.info("Calling OpenAI images.generate...")
@@ -115,10 +117,10 @@ def generate_image(
         )
         logger.info("OpenAI images.generate completed")
     elif provider == "azure":
-        # Azure may require size format like "1792x1024" or "1792x1024" depending on API version
         azure_size = size if size in ("1024x1024", "1024x1792", "1792x1024") else "1792x1024"
-        logger.info(f"Calling Azure images.generate... model={model}, size={azure_size}")
+        print(f"[DEBUG] About to call Azure images.generate with model='{model}', size={azure_size}, quality='{quality}'")
         try:
+            print(f"[DEBUG] Calling client.images.generate... (this may take a while)")
             resp = client.images.generate(
                 model=model,
                 prompt=prompt,
@@ -126,7 +128,7 @@ def generate_image(
                 quality=quality,
                 n=n,
             )
-            logger.info("Azure images.generate completed")
+            print(f"[DEBUG] Azure images.generate completed successfully")
         except Exception as azure_err:
             logger.error(f"Azure images.generate failed: {azure_err}")
             # Add context to help debug Azure-specific issues

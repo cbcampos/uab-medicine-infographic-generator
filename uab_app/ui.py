@@ -1021,7 +1021,7 @@ def main() -> None:
 
                 foot = "\n".join(chart.get("footnotes") or [])
                 nfoot = st.text_area(
-                    "Footnotes (one per line)", value=foot, height=60, key=f"ft_{cid}"
+                    "Footnotes (one per line)", value=foot, height=68, key=f"ft_{cid}"
                 )
                 chart["footnotes"] = [ln for ln in nfoot.splitlines() if ln.strip()]
 
