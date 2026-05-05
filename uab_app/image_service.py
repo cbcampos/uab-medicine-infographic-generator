@@ -6,12 +6,14 @@ import base64
 import io
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+import httpx
 from openai import APITimeoutError, AzureOpenAI, OpenAI
 from PIL import Image
 
@@ -77,10 +79,13 @@ def make_client(
         setattr(c, "_gemini_api_key", api_key)
         return c
     normalized = normalize_azure_endpoint(endpoint) if endpoint else ""
-    print(f"[DEBUG] Azure client created with endpoint: {normalized}, api_version: {api_version or '2024-12-01-preview'}")
+    print(
+        "[DEBUG] Azure client created with endpoint: "
+        f"{normalized}, api_version: {AZURE_API_VERSION_LOCKED}"
+    )
     return AzureOpenAI(
         api_key=api_key,
-        api_version=api_version or "2024-12-01-preview",
+        api_version=AZURE_API_VERSION_LOCKED,
         azure_endpoint=normalized,
         timeout=timeout,
     )
@@ -94,6 +99,85 @@ def _openai_size_map(size: str) -> str:
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+AZURE_API_VERSION_LOCKED = "2024-02-01"
+AZURE_IMAGE_PROMPT_MAX_CHARS = 32000
+AZURE_IMAGE_PROMPT_SAFETY_MARGIN = 200
+
+
+def _trim_prompt_section(prompt: str, section_title: str, max_chars: int, note: str) -> str:
+    """Trim one markdown section body while preserving heading and structure."""
+    if max_chars <= 0:
+        return prompt
+    pattern = rf"(## {re.escape(section_title)}\n)(.*?)(?=\n## |\Z)"
+    m = re.search(pattern, prompt, flags=re.DOTALL)
+    if not m:
+        return prompt
+    body = (m.group(2) or "").strip()
+    if len(body) <= max_chars:
+        return prompt
+    trimmed = body[:max_chars].rstrip()
+    replacement = f"{m.group(1)}{trimmed}\n\n[{note}]"
+    return prompt[: m.start()] + replacement + prompt[m.end() :]
+
+
+def optimize_azure_image_prompt(prompt: str, max_prompt_len: int) -> str:
+    """Reduce prompt size while preserving high-priority constraints."""
+    if len(prompt) <= max_prompt_len:
+        return prompt
+
+    optimized = prompt
+    # Trim lower-priority high-verbosity sections first.
+    optimized = _trim_prompt_section(
+        optimized,
+        "Source Documents (Additional Context)",
+        9000,
+        "TRUNCATED: source documents shortened for Azure image prompt limit",
+    )
+    optimized = _trim_prompt_section(
+        optimized,
+        "User-Provided Context and Custom Content",
+        5000,
+        "TRUNCATED: user context shortened for Azure image prompt limit",
+    )
+    optimized = _trim_prompt_section(
+        optimized,
+        "Refinement Notes (if any)",
+        1500,
+        "TRUNCATED: refinement notes shortened for Azure image prompt limit",
+    )
+    if len(optimized) <= max_prompt_len:
+        return optimized
+
+    # If still too long, tighten those same sections further.
+    optimized = _trim_prompt_section(
+        optimized,
+        "Source Documents (Additional Context)",
+        5000,
+        "TRUNCATED: source documents aggressively shortened",
+    )
+    optimized = _trim_prompt_section(
+        optimized,
+        "User-Provided Context and Custom Content",
+        2500,
+        "TRUNCATED: user context aggressively shortened",
+    )
+    optimized = _trim_prompt_section(
+        optimized,
+        "Refinement Notes (if any)",
+        800,
+        "TRUNCATED: refinement notes aggressively shortened",
+    )
+    if len(optimized) <= max_prompt_len:
+        return optimized
+
+    # Final guardrail: hard cap to guarantee request validity.
+    return (
+        optimized[:max_prompt_len].rstrip()
+        + "\n\n[TRUNCATED: prompt shortened to fit Azure image request limit]"
+    )
+
 
 def generate_image(
     client: OpenAI | AzureOpenAI,
@@ -117,49 +201,78 @@ def generate_image(
         )
         logger.info("OpenAI images.generate completed")
     elif provider == "azure":
-        azure_size = size if size in ("1024x1024", "1024x1792", "1792x1024") else "1792x1024"
-        print(f"[DEBUG] About to call Azure images.generate with model='{model}', size={azure_size}, quality='{quality}'")
-        try:
-            print(f"[DEBUG] Calling client.images.generate... (this may take a while)")
-            resp = client.images.generate(
-                model=model,
-                prompt=prompt,
-                size=azure_size,
-                quality=quality,
-                n=n,
+        max_prompt_len = AZURE_IMAGE_PROMPT_MAX_CHARS - AZURE_IMAGE_PROMPT_SAFETY_MARGIN
+        prompt_to_send = optimize_azure_image_prompt(prompt, max_prompt_len)
+        if len(prompt_to_send) != len(prompt):
+            logger.info(
+                "Azure prompt optimized from %s to %s chars",
+                len(prompt),
+                len(prompt_to_send),
             )
-            print(f"[DEBUG] Azure images.generate completed successfully")
+        azure_size = size if size in ("1024x1024", "1024x1792", "1792x1024") else "1792x1024"
+        azure_endpoint = str(getattr(client, "_azure_endpoint", "")).rstrip("/")
+        # Empirically validated against this project's LiteLLM/Azure proxy: image generation
+        # succeeds on the deployment path with api-version 2024-02-01.
+        image_api_version = AZURE_API_VERSION_LOCKED
+        req_url = (
+            f"{azure_endpoint}/openai/deployments/{model}/images/generations"
+            f"?api-version={image_api_version}"
+        )
+        req_body = {
+            "prompt": prompt_to_send,
+            "size": azure_size,
+            "quality": quality,
+            "output_compression": 100,
+            "output_format": "png",
+            "n": n,
+        }
+        timeout = float(IMAGE_GEN_TIMEOUT_S)
+        print(
+            "[DEBUG] Calling Azure deployment image endpoint: "
+            f"deployment='{model}', size={azure_size}, quality='{quality}', api_version={image_api_version}"
+        )
+        try:
+            with httpx.Client(timeout=timeout) as http_client:
+                resp_http = http_client.post(
+                    req_url,
+                    headers={
+                        "Authorization": f"Bearer {client.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=req_body,
+                )
+            if resp_http.status_code >= 400:
+                msg = resp_http.text[:500].replace("\n", " ")
+                raise RuntimeError(
+                    f"Azure image generation failed (HTTP {resp_http.status_code}) "
+                    f"for deployment '{model}': {msg}"
+                )
+            payload = resp_http.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, list) or not data:
+                raise RuntimeError(
+                    f"Azure image generation returned no image payload for deployment '{model}'."
+                )
+            first = data[0] if isinstance(data[0], dict) else {}
+            b64 = first.get("b64_json")
+            url = first.get("url")
+            if b64:
+                return f"data:image/png;base64,{b64}"
+            if url:
+                return str(url)
+            raise RuntimeError(
+                f"Azure image generation returned data without b64_json/url for deployment '{model}'."
+            )
         except Exception as azure_err:
-            logger.error(f"Azure images.generate failed: {azure_err}")
-            # Add context to help debug Azure-specific issues
+            logger.error(f"Azure image generation failed: {azure_err}")
             err_msg = str(azure_err)
             if "404" in err_msg or "Not Found" in err_msg:
                 raise RuntimeError(
                     f"Azure image generation failed with 404. "
                     f"Deployment/model: '{model}'. "
                     f"This usually means the deployment doesn't exist or image generation isn't enabled. "
-                    f"Verify in Azure portal: check the deployment name matches exactly and the resource has 'Microsoft.CognitiveServices/OpenAI' with image generation capability."
-                ) from azure_err
-            raise
-        # Azure may require size format like "1792x1024" or "1792x1024" depending on API version
-        azure_size = size if size in ("1024x1024", "1024x1792", "1792x1024") else "1792x1024"
-        try:
-            resp = client.images.generate(
-                model=model,
-                prompt=prompt,
-                size=azure_size,
-                quality=quality,
-                n=n,
-            )
-        except Exception as azure_err:
-            # Add context to help debug Azure-specific issues
-            err_msg = str(azure_err)
-            if "404" in err_msg or "Not Found" in err_msg:
-                raise RuntimeError(
-                    f"Azure image generation failed with 404. "
-                    f"Deployment/model: '{model}'. "
-                    f"This usually means the deployment doesn't exist or image generation isn't enabled. "
-                    f"Verify in Azure portal: check the deployment name matches exactly and the resource has 'Microsoft.CognitiveServices/OpenAI' with image generation capability."
+                    f"Verify in Azure portal: check the deployment name matches exactly and the resource has "
+                    f"image generation capability."
                 ) from azure_err
             raise
     else:
@@ -205,7 +318,7 @@ def user_friendly_error(exc: BaseException) -> str:
         return (
             "Generation failed: HTTP 404 (not found). "
             "**Azure:** verify your image deployment exists and the API version supports image generation. "
-            "Common Azure image API versions: `2024-02-01-preview` or `2024-12-01-preview`. "
+            "This app is locked to Azure API version `2024-02-01`. "
             "Ensure your subscription has the Azure OpenAI image generation capability enabled. "
             "**Gemini:** use an image-generation model ID such as "
             "`gemini-3-pro-image-preview` (Nano Banana Pro), "
@@ -245,6 +358,11 @@ def generate_with_retry(
         except BaseException as e:
             logger.error(f"Attempt {attempt + 1} failed: {type(e).__name__}: {e}")
             last_err = e
+            emsg = str(e)
+            # Validation errors should fail fast (retries won't help).
+            if "string_above_max_length" in emsg or "Invalid 'prompt': string too long" in emsg:
+                logger.error("Non-retryable prompt length validation error detected; failing fast.")
+                raise
             if attempt < MAX_GENERATION_ATTEMPTS - 1:
                 delay = BACKOFF_BASE_S * (2**attempt)
                 logger.info(f"Retrying in {delay} seconds...")

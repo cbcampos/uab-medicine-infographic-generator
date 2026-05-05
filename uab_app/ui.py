@@ -275,16 +275,21 @@ def main() -> None:
                 )
                 st.text_input(
                     "API Version",
-                    value=os.environ.get(
-                        "AZURE_OPENAI_API_VERSION",
-                        "2024-12-01-preview",
-                    ),
+                    value="2024-02-01",
                     key="azure_api_version",
+                    help=(
+                        "Locked for all Azure calls in this app (chat, vision, and image generation)."
+                    ),
+                    disabled=True,
                 )
                 st.text_input(
                     "Image deployment",
                     value=os.environ.get("AZURE_OPENAI_IMAGE_MODEL", "gpt-image-2"),
                     key="azure_image_model",
+                    help=(
+                        "Azure deployment name for image generation. The app calls "
+                        "/openai/deployments/{deployment}/images/generations."
+                    ),
                 )
                 st.text_input(
                     "Chat deployment (cleanup)",
@@ -524,9 +529,7 @@ def main() -> None:
             endpoint = st.session_state.get("azure_endpoint", "") or os.environ.get(
                 "AZURE_OPENAI_ENDPOINT", ""
             )
-            api_version = st.session_state.get("azure_api_version", "") or os.environ.get(
-                "AZURE_OPENAI_API_VERSION", "2024-12-01-preview"
-            )
+            api_version = "2024-02-01"
             img_model = st.session_state.get("azure_image_model", "") or os.environ.get(
                 "AZURE_OPENAI_IMAGE_MODEL", "gpt-image-2"
             )
