@@ -10,8 +10,17 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Optional
 
+import logging
 import pandas as pd
 import streamlit as st
+
+# Configure logging to show in Streamlit
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 try:
     from dotenv import load_dotenv

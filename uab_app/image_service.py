@@ -89,6 +89,10 @@ def _openai_size_map(size: str) -> str:
     return m.get(size, "1792x1024")
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 def generate_image(
     client: OpenAI | AzureOpenAI,
     provider: str,
@@ -98,7 +102,10 @@ def generate_image(
     quality: str,
 ) -> str:
     n = 1
+    logger.info(f"Generating image with provider={provider}, model={model}, size={size}, quality={quality}")
+    
     if provider == "openai":
+        logger.info("Calling OpenAI images.generate...")
         resp = client.images.generate(
             model=model,
             prompt=prompt,
@@ -106,7 +113,32 @@ def generate_image(
             quality=quality,
             n=n,
         )
+        logger.info("OpenAI images.generate completed")
     elif provider == "azure":
+        # Azure may require size format like "1792x1024" or "1792x1024" depending on API version
+        azure_size = size if size in ("1024x1024", "1024x1792", "1792x1024") else "1792x1024"
+        logger.info(f"Calling Azure images.generate... model={model}, size={azure_size}")
+        try:
+            resp = client.images.generate(
+                model=model,
+                prompt=prompt,
+                size=azure_size,
+                quality=quality,
+                n=n,
+            )
+            logger.info("Azure images.generate completed")
+        except Exception as azure_err:
+            logger.error(f"Azure images.generate failed: {azure_err}")
+            # Add context to help debug Azure-specific issues
+            err_msg = str(azure_err)
+            if "404" in err_msg or "Not Found" in err_msg:
+                raise RuntimeError(
+                    f"Azure image generation failed with 404. "
+                    f"Deployment/model: '{model}'. "
+                    f"This usually means the deployment doesn't exist or image generation isn't enabled. "
+                    f"Verify in Azure portal: check the deployment name matches exactly and the resource has 'Microsoft.CognitiveServices/OpenAI' with image generation capability."
+                ) from azure_err
+            raise
         # Azure may require size format like "1792x1024" or "1792x1024" depending on API version
         azure_size = size if size in ("1024x1024", "1024x1792", "1792x1024") else "1792x1024"
         try:
@@ -200,18 +232,23 @@ def generate_with_retry(
     quality: str,
     progress_callback: Optional[Any] = None,
 ) -> str:
+    logger.info(f"Starting generate_with_retry, max attempts: {MAX_GENERATION_ATTEMPTS}")
     last_err: Optional[BaseException] = None
     for attempt in range(MAX_GENERATION_ATTEMPTS):
+        logger.info(f"Attempt {attempt + 1}/{MAX_GENERATION_ATTEMPTS}")
         try:
             if progress_callback:
                 progress_callback(attempt)
             return generate_image(client, provider, model, prompt, size, quality)
         except BaseException as e:
+            logger.error(f"Attempt {attempt + 1} failed: {type(e).__name__}: {e}")
             last_err = e
             if attempt < MAX_GENERATION_ATTEMPTS - 1:
                 delay = BACKOFF_BASE_S * (2**attempt)
+                logger.info(f"Retrying in {delay} seconds...")
                 time.sleep(delay)
     assert last_err is not None
+    logger.error(f"All {MAX_GENERATION_ATTEMPTS} attempts failed")
     raise last_err
 
 
