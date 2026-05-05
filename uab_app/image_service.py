@@ -24,6 +24,18 @@ from uab_app.constants import (
 )
 
 
+def normalize_azure_endpoint(endpoint: str) -> str:
+    """Clean Azure endpoint URL - remove trailing /v1, /openai, slashes that cause 404."""
+    if not endpoint:
+        return endpoint
+    # Strip trailing slashes
+    endpoint = endpoint.rstrip("/")
+    # Remove /v1 suffix if present (client appends /openai internally)
+    if endpoint.endswith("/v1"):
+        endpoint = endpoint[:-3]
+    return endpoint
+
+
 def normalize_gemini_image_model_id(raw: str) -> str:
     """Map marketing names → REST model IDs; strip optional models/ prefix."""
     m = (raw or "").strip()
@@ -67,7 +79,7 @@ def make_client(
     return AzureOpenAI(
         api_key=api_key,
         api_version=api_version or "2024-12-01-preview",
-        azure_endpoint=endpoint or "",
+        azure_endpoint=normalize_azure_endpoint(endpoint) if endpoint else "",
         timeout=timeout,
     )
 
