@@ -95,13 +95,27 @@ def generate_image(
             n=n,
         )
     elif provider == "azure":
-        resp = client.images.generate(
-            model=model,
-            prompt=prompt,
-            size=size,
-            quality=quality,
-            n=n,
-        )
+        # Azure may require size format like "1792x1024" or "1792x1024" depending on API version
+        azure_size = size if size in ("1024x1024", "1024x1792", "1792x1024") else "1792x1024"
+        try:
+            resp = client.images.generate(
+                model=model,
+                prompt=prompt,
+                size=azure_size,
+                quality=quality,
+                n=n,
+            )
+        except Exception as azure_err:
+            # Add context to help debug Azure-specific issues
+            err_msg = str(azure_err)
+            if "404" in err_msg or "Not Found" in err_msg:
+                raise RuntimeError(
+                    f"Azure image generation failed with 404. "
+                    f"Deployment/model: '{model}'. "
+                    f"This usually means the deployment doesn't exist or image generation isn't enabled. "
+                    f"Verify in Azure portal: check the deployment name matches exactly and the resource has 'Microsoft.CognitiveServices/OpenAI' with image generation capability."
+                ) from azure_err
+            raise
     else:
         model_id = normalize_gemini_image_model_id(model)
         req_body = {
@@ -144,13 +158,22 @@ def user_friendly_error(exc: BaseException) -> str:
     if isinstance(exc, urllib.error.HTTPError) and getattr(exc, "code", None) == 404:
         return (
             "Generation failed: HTTP 404 (not found). "
+            "**Azure:** verify your image deployment exists and the API version supports image generation. "
+            "Common Azure image API versions: `2024-02-01-preview` or `2024-12-01-preview`. "
+            "Ensure your subscription has the Azure OpenAI image generation capability enabled. "
             "**Gemini:** use an image-generation model ID such as "
             "`gemini-3-pro-image-preview` (Nano Banana Pro), "
-            "`gemini-3.1-flash-image-preview`, or `gemini-2.5-flash-image` "
-            "(marketing name nano-banana-pro maps to gemini-3-pro-image-preview in this app). "
-            "**OpenAI/Azure:** verify the image model/deployment exists for your API key/account."
+            "`gemini-3.1-flash-image-preview`, or `gemini-2.5-flash-image`. "
+            "**OpenAI:** verify the image model exists for your API key."
         )
-    msg = str(exc).strip()
+    exc_str = str(exc)
+    if "404" in exc_str or "Not Found" in exc_str:
+        return (
+            "Generation failed: 404 Not Found. This usually means the model/deployment name "
+            "doesn't exist or image generation isn't enabled. Check your Azure portal to verify "
+            "the deployment name matches exactly and the resource has image generation capability."
+        )
+    msg = exc_str.strip()
     if len(msg) > 220:
         msg = msg[:217] + "..."
     return f"Generation failed: {msg}"
