@@ -96,21 +96,27 @@ AUDIENCE_GUIDANCE = {
 - Include citation placeholders where appropriate
 - Minimal decorative illustration; emphasize diagrams and charts
 - Professional color palette; restrained use of UAB Gold
-- Written for peers (researchers, faculty, clinicians)""",
+- Written for peers (researchers, faculty, clinicians)
+- Keep technical precision and report uncertainty when relevant""",
     "clinical": """### clinical
 - Clinical tone, evidence-based framing
 - Clear clinical endpoints and outcomes when data exists in the source
 - Professional but slightly more visual than academic
 - Use clinical terminology appropriately
-- Suitable for HCP education materials""",
+- Suitable for HCP education materials
+- Emphasize practical clinical relevance and care implications""",
     "patient": """### patient
-- Plain language, warm, non-technical
+- Use plain language at approximately 8th-grade reading level
+- Define or replace complex medical terms in simple words
+- Short sentences, clear headings, and concrete takeaways
 - Action-oriented messaging ("what you can do")
 - Encouraging tone, positive framing
 - Friendly illustrations, accessible iconography
 - Large readable text, minimal jargon""",
     "community": """### community
 - Culturally relevant, warm, community-centered
+- Tell a compelling story arc: problem -> why this matters -> actions
+- Include an explicit "Why this matters" element tied to real-life impact
 - Action-oriented with clear calls to action
 - Celebratory of community assets and strengths
 - Accessible language, relatable visuals

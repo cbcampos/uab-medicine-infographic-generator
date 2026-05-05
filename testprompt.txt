@@ -1,0 +1,351 @@
+## Image Specifications
+- Type: Infographic
+- Layout: Horizontal layout (16:9 aspect ratio)
+- Style: UAB Hand-drawn Paper Craft
+- Audience: academic
+
+## Composition and Layout (follow this structure)
+- TOP REGION: Title/headline centered, large, bold — reserve for key message
+- LEFT / CENTER: Primary content area — key points, icons, illustrations, data callouts
+- RIGHT / LOWER: Supporting content, secondary data, evidence summaries
+- BOTTOM: Clean white band for logo placement (bottom-right or bottom-center)
+- Leave generous negative space — do NOT crowd the layout
+- When specific text must appear in the image, write it EXACTLY as it should appear (use ALL CAPS for headings, spell out all technical/medical terms letter by letter)
+
+## Style Guidelines
+
+## Color Palette
+- Primary: UAB Green (#1A5632), Healing Teal (#08948E), soft warm pastels
+- Background: White (#FFFFFF) or Light Cream (#FFF8F0)
+- Accents: UAB Gold (#FFC72C), Healing Teal (#08948E)
+- Fill: Light Teal tint (#E8F6F5) for cards and panels
+
+## Visual Elements
+- Hand-drawn or cut-paper quality with organic, slightly imperfect shapes
+- Layered depth with soft paper-shadow effects
+- Simple cartoon icons representing people and health
+- Community/human figures in friendly, approachable cartoon form
+- Ample whitespace, clean composition
+- Keywords and core concepts highlighted with UAB Gold
+- Strictly hand-drawn — no realistic or photographic elements
+
+## Typography
+- Clean sans-serif (Source Sans Pro or Open Sans)
+- Bold keywords in UAB Green (#1A5632) or Navy (#003A5C)
+- Body text in Dark Gray (#4A4A4A)
+- Keywords emphasized with larger/bolder text in UAB Gold
+
+
+## UAB Medicine Brand Compliance
+- Primary colors: UAB Green (#1A5632), UAB Gold (#FFC72C)
+- Accent: UAB Medicine Navy (#003A5C)
+- Secondary/Patient color: Healing Teal (#08948E)
+- White background (#FFFFFF) or Light Gray (#F5F5F5) preferred
+- Do NOT use Athletic Gold (#E87722) — not part of Medicine palette
+- Maintain high contrast for accessibility (WCAG AA minimum)
+
+## UAB Medicine Logo Rules
+- Use ONLY the approved UAB Medicine logo file as the logo source.
+- Do NOT redraw, reinterpret, recreate, stylize, distort, watercolor, trace, recolor, crop, stretch, or modify the logo.
+- Do NOT generate any alternate UAB, UAB Medicine, university, hospital, school, or department logo.
+- Do NOT invent seals, icons, shield marks, taglines, or substitute brand marks.
+- The approved logo must appear exactly as provided, with correct proportions and colors.
+- Place the logo in a clean white footer or corner area with adequate clear space.
+- Keep the logo separate from watercolor effects, textures, shadows, illustrations, or background patterns.
+- If the logo cannot be reproduced exactly from the attached source, leave a blank white logo placement box labeled: "Approved UAB Medicine logo placement."
+
+- Technical note for layout: Leave the bottom edge clear or use a plain white band; the application may composite the approved logo file onto a white footer after generation.
+
+
+## Chart/Data Accuracy Rules (STRICT — no exceptions)
+- Do NOT create box plots, forest plots, whisker elements, CI lines, or any chart with inferred data.
+- If the source provides only median + IQR: render a DOT-AND-RANGE chart with exact median dots and IQR range bars — nothing else.
+- If the source provides only a hazard ratio + CI: render a single EVIDENCE CALLOUT CARD with that exact HR and CI.
+- Do NOT display HRs by outcome subtype (e.g. HFpEF vs HFrEF) unless those exact values are explicitly provided.
+- If the source provides incomplete data: generate a placeholder box labeled "Exact values to be inserted from [source figure/table]" — do not estimate or fill in.
+- All numeric labels, axis values, and legend entries must match the source EXACTLY.
+- Do NOT invent whiskers, quartile boundaries, outlier points, or any visual element not explicitly in the source.
+
+## User-provided chart reference (from publications / uploads)
+[No chart figures or data files attached — use only Source Documents and user context for any numbers; do not invent statistics.]
+
+## Audience-Specific Guidelines
+### academic
+- Formal tone, data-dense layout
+- Include citation placeholders where appropriate
+- Minimal decorative illustration; emphasize diagrams and charts
+- Professional color palette; restrained use of UAB Gold
+- Written for peers (researchers, faculty, clinicians)
+
+## Content Requirements
+- Include simple visual elements, icons, or illustrations to enhance visual appeal
+- If content involves sensitive or copyrighted figures, replace with visually similar alternatives
+- Keep information concise, highlight keywords and core concepts
+- Use whitespace effectively to emphasize key points
+- Output in the same language as the provided content
+- TEXT IN IMAGE: Write any specific text EXACTLY as it should appear. Use ALL CAPS for titles/headlines. Spell out technical and medical terms letter by letter for accuracy (e.g. "H Y P E R T E N S I O N" not "hypertension" if that is the intended rendering). Do not approximate — if exact wording matters, quote it verbatim.
+
+## Slides, Diagrams & Charts — Artifact Spec Format (STRICT)
+- Treat this as an artifact spec, not an illustration request. Name the exact deliverable, define the canvas and visual hierarchy, and provide the real text or data.
+- For slides, charts, or diagram-heavy assets: include ALL numbers, labels, axes, and footnotes DIRECTLY in the prompt. Do not assume the model will fill in realistic-looking data — it must be explicit.
+- Use quality="high" for any image that contains small text, legends, axes, footnotes, or data labels.
+- Use landscape orientation (1792x1024) for deck-style outputs.
+- Design requirements: readable typography, polished spacing, clear data hierarchy, professional visual language.
+- AVOID: clip art, stock photography, gradients, shadows, decorative clutter, generic or overdesigned elements.
+- Structure chart/diagram content with exact values:
+ * BAR CHART: Label each bar exactly (e.g. "Group A: 43%", "Group B: 27%"), include axis labels and units.
+ * EVIDENCE CALLOUT: Quote the exact finding (e.g. "A 10-point higher LE8 score was associated with 28% lower risk of HF hospitalization. HR: 0.72; 95% CI: 0.66-0.79").
+ * DOT-AND-RANGE: Show exact median and IQR values as labeled markers.
+ * WORKFLOW DIAGRAM: List each step in sequence with exact wording.
+ * If data is incomplete: use a placeholder box labeled "Exact values to be inserted from [source figure/table]" — never estimate.
+
+## Instructions
+Use the image generation model to create the illustration based on the provided input.
+
+## Source Documents (Additional Context)
+### Document 1
+BRIEF  REPORT
+Life’s  Essential  8 and Incident
+Heart  Failure  Among  REGARDS
+Participants  With  and Without  Diabetes
+Yulia  Khodneva,  MD,  PHD, a Andrea  L. Cherrington,  MD,  a Pankaj  Arora,  MD,  a Jessica  Blair,  PHD, b
+Monika  M. Safford,  MD,  c Ro-Jay  Reid,  MD,  c Madeline  R. Sterling,  MD,  c Megan  Nordberg,  MPH,  c Parag  Goyal,  MD,  c
+Emily  B. Levitan,  SCD b
+H eart  failure  (HF),  a significant  complication
+of diabetes,  develops  in 22%  of cases  and
+contributes  to morbidity  and mortality
+even  in the absence  of underlying  coronary  artery
+disease  (CAD).  1 The  AHA’s  (American  Heart  Associa-
+tion)  LE8  (Life’s  Essential  8) framework  measures
+cardiovascular  health  (CVH)  using  blood  pressure,
+blood  glucose,  blood  lipids,  weight,  physical  activity,
+adherence  to a Mediterranean  diet,  nicotine  expo-
+sure,  and sleep  health.  2 Optimal  CVH  decreases  the
+risk of cardiovascular  disease  in the general  popula-
+tion,  2-4 but it is unclear  whether  better  CVH  can
+mitigate  the risk of developing  HF among  adults
+with  diabetes  or prediabetes.  To address  this  gap,
+we examined  associations  between  baseline  CVH
+and incident  HF among  adults  with  diabetes,
+prediabetes,  and without  diabetes.
+METHODS
+Baseline  LE8  scores  (range:  0-100)  were  calculated
+for HF-free  adults  from  the REGARDS  (REasons  for
+Geographic  and Racial  Differences  in Stroke)  study,  a
+prospective  ongoing  biracial  cohort  of U.S.
+community-dwelling  adults  aged  $45 years,
+recruited  from  2003  to 2007  from  all 48 continental
+states  with  oversampling  from  the southeastern
+United  States.  5 Baseline  data  on sociodemographics
+and LE8  behaviors  (physical  activity,  nicotineexposure,  and sleep  health)  were  collected  by phone.
+Other  LE8  factors  and behaviors  including  fasting
+blood  and urine  samples,  electrocardiograms,  blood
+pressure,  anthropometric  measures  (body  mass  index
+[BMI]),  diet,  and medication  use were  obtained  dur-
+ing an in-home  visit.  REGARDS  study  procedures
+were  approved  by the institutional  review  board,  and
+all participants  provided  written  informed  consent.
+Baseline  diabetes  was  ascertained  based  on fasting
+serum  glucose,  random  serum  glucose,  glycosylated
+hemoglobin  A 1c , use of antidiabetic  medication,
+and/or  self-report,  using  standard  definitions.  The
+4 primary  outcomes  included  a composite  measure  of
+incident  HF hospitalization  or HF death,  incident  HF
+hospitalization  alone,  incident  heart  failure  with
+preserved  ejection  fraction  (HFpEF)  (ejection  frac-
+tion  [EF]  $50%)  hospitalization,  and incident  heart
+failure  with  reduced  ejection  fraction  (HFrEF)
+(EF D50%)  hospitalization.  These  were  clinician -
+adjudicated  prospectively  between  2004  and 2020
+by reviewing  records  for clinical  signs  and symptoms
+of HF, B-type  natriuretic  peptide  levels,  and cardiac
+imaging  data.  Baseline  CAD  and adjudicated  interim
+nonfatal  myocardial  infarction,  occurring  after  the
+baseline  and before  the incident  HF hospitalization,
+were  included  as covariates.
+We excluded  participants  with  baseline  HF
+(n  3,948),  who  were  missing  to follow-up  (n  512),
+or who  were  missing  data  on sleep  health  (n  7,750)
+ISSN  2213-1779  https://doi.org/10.1016/j.jchf.2025.102686From  the a Department  of Medicine,  School  of Medicine,  University  of Alabama,  Birmingham,  Alabama,  USA;  b Department  of
+Epidemiology,  School  of Public  Health,  University  of Alabama,  Birmingham,  Alabama,  USA;  and the c Weil  Cornell  Medicine,  New
+York,  New  York,  USA.
+The authors  attest  they  are in compliance  with  human  studies  committees  and animal  welfare  regulations  of the authors’
+institutions  and Food  and Drug  Administration  guidelines,  including  patient  consent  where  appropriate.  For more
+information,  visit  the Author  Center.
+Manuscript  received  March  26, 2025;  revised  manuscript  received  July  2, 2025,  accepted  August  26, 2025.
+JACC: HEART FAILURE VOL. 14, NO. 2, 2026
+ã 2026 THE AUTHORS. PUBLISHED BY ELSEVIER ON BEHALF OF THE AMERICAN
+COLLEGE OF CARDIOLOGY FOUNDATION. THIS IS AN OPEN ACCESS ARTICLE UNDER
+THE CC BY-NC-ND LICENSE (http://creativecommons.org/licenses/by-nc-nd/4.0/).
+
+or diabetes  status  (n  764).  Missing  data  in
+covariates  and LE8  metrics  (if D10%  missing)
+were  imputed  by chained  equations  in 30
+data  sets.  Missing  values  in individual  LE8
+metrics  were  as follows:  physical  activity
+(n  39), BMI  (n  23), blood  pressure  (n  2),
+diet  (n  1,081),  lipids  (n  118),  and nicotine
+exposure  (n  13). Missing  data  in covariates
+included  income  (n  1,935),  education
+(n  6), and baseline  CAD  (n  132).  LE8  cu-
+mulative  and each  8 individual  metric  scores
+were  calculated  following  the AHA  algorithm.
+HR and 95%  CI were  calculated  in the Cox  pro-
+portional  hazards  regression  models,  stratified  by
+diabetes  status,  to evaluate  the association  between
+baseline  LE8  (per  10-point  higher  cumulative  score)
+and incident  HF, and they  were  adjusted  for age,  sex,
+race,  income,  education,  marital  status,  region  of
+residence,  baseline  CAD,  and interim  myocardial
+infarction.  To account  for diabetes  severity  and to
+better  differentiate  cardiovascular  risk,  we repeated
+the analyses  only  among  participants  treated  with
+insulin.  The  proportionality  assumption  was  tested
+and satisfied  in fully  adjusted  models  by assessing  an
+interaction  between  the baseline  LE8  score  and the
+log of follow-up  time.  Analyses  were  conducted  in
+SAS  version  9.4 (SAS  Institute)  and STATA  version  18
+(StataCorp).
+RESULTS
+In the final  sample  of 17,265  individuals,  6,337
+(36.7%)  were  Black,  9,550  (55.3%)  were  women,  3,403
+(19.7%)  had diabetes,  3,969  (23.0%)  had prediabetes,
+and 9,893  (57.3%)  had neither  diabetes  nor predia-
+betes  at baseline.
+The  median  baseline  cumulative  LE8  score  for the
+overall  sample  was  63 (Q1-Q3:  54-73).  Among  those
+with  diabetes,  the baseline  cumulative  LE8  score  was
+lower  than  the scores  among  those  with  prediabetes
+or no diabetes:  53 (Q1-Q3:  45-61)  compared  with
+59 (Q1-Q3:  50-68)  and 69 (Q1-Q3:  59-77),  respectively
+(Figure  1A). Participants  with  diabetes  had lower
+median  baseline  scores  in the BMI,  blood  pressure,
+and glucose  domains.  Only  21%  of participants  with
+diabetes  achieved  an “ideal”  score  of 100 in physical
+activity,  15%  in lipids,  10%  in BMI,  9% in blood
+pressure,  and 7% in diet.
+Over  a median  follow-up  period  of 15.8  years  (Q1-
+Q3: 9.6-15.8  years),  there  were  986 incident  HF hos-
+pitalizations  or HF deaths,  including  356 among
+those  with  diabetes.  In multivariable-adjusted  Coxproportional  hazards  models,  a 10-point  higher  LE8
+score  was  associated  with  28%  lower  risk of incident
+HF events  among  those  with  diabetes  (HR:  0.72;
+95%  CI: 0.66-0.79)  (Figure  1B). This  association  was
+similar  among  those  without  diabetes.  The  results
+were  similar  for HFpEF  and HFrEF  hospitalizations.
+The  association  of 10-point  higher  LE8  score  and
+incident  HF events  was  also  similar  when  the sample
+was  restricted  to individuals  with  diabetes  treated
+with  insulin  (HR:  0.74;  95%  CI: 0.60-0.80).  The  as-
+sociations  between  LE8  and HF outcomes  were
+weaker  among  those  with  prediabetes.
+DISCUSSION
+This  study  presents  strong  observational  evidence
+that  maintaining  better  CVH  even  in the presence  of
+diabetes  and regardless  of whether  participants  with
+diabetes  were  treated  with  insulin  may  be important
+for reducing  risk of HF, including  both  major  sub-
+types  of HF, HFpEF  and HFrEF.
+Our findings  can offer  clinical  implications  that
+might  be important  for developing  future  strategies
+to reduce  incident  HF in diabetes.  CVH  metrics  might
+provide  a framework  for the development  and
+implementation  of interventions  to prevent  HF
+among  patients  with  diabetes,  as our study  found
+that  a 10-point  higher  LE8  score  was  associated  with
+a 28%  lower  risk of incident  HF. This  is important  for
+people  with  diabetes  because  diabetes  itself  puts  in-
+dividuals  at risk of HF. Our results  underscore  the
+importance  of tighter  blood  pressure  and lipids  con-
+trol,  physical  activity,  and other  CVH  components  to
+prevent  HF even  in the setting  of hyperglycemic
+state.
+STUDY STRENGTHS  AND  LIMITATIONS.  Our study’s
+strengths  include  large  diverse  sample  and rigorously
+adjudicated  outcomes  as well  as quality-controlled
+data  collection.  Limitations  include  an observa-
+tional  design  that  limits  causal  inferences.  The  LE8
+score  was  calculated  using  baseline  measures,  and we
+were  not able  to control  for the changes  in LE8
+metrics  or diabetes  status  over  time.  Some  health
+behaviors  were  self-reported  with  known  limitations.
+CONCLUSIONS
+In this  study  a 10-point  higher  LE8  score  was  asso-
+ciated  with  a 28%  lower  risk of incident  HF among
+those  with  diabetes.  Maintaining  CVH  may  mitigate
+the risk of de novo  HF in diabetes  despite  the risk
+presented  by diabetes  itself.ABBREVIATIONS
+AND ACRONYMS
+BMI  = body  mass  index
+CAD  = coronary  artery  disease
+CVH  = cardiovascular  health
+HF = heart  failure
+HFpEF  = heart  failure  with
+preserved  ejection  fraction
+HFrEF  = heart  failure  with
+reduced  ejection  fractionKhodneva  et al JACC: HEART FAILURE VOL. 14, NO. 2, 2026
+Cardiovascular  Health  and Heart  Failure  in Diabetes  FEBRUARY 2026:1026862
+
+FIGURE 1 LE8 and Incident  HF Hospitalization
+(A) Median  cumulative  and individual  LE8 metric  scores  by diabetes  status.  (B) Association  of cumulative  LE8 (per 10 points  higher)  with  incident  HF. Adjusted  HR
+(95%  CI) for a 10-point  higher  LE8 score.  DM  diabetes  mellitus;  HF  heart  failure;  HFpEF   heart  failure  with  preserved  ejection  fraction;  HFrEF   heart  failure
+with  reduced  ejection  fraction;  LE8  Life’s  Essential  8.JACC: HEART FAILURE VOL. 14, NO. 2, 2026 Khodneva  et al
+FEBRUARY 2026:102686 Cardiovascular  Health  and Heart  Failure  in Diabetes3
+
+FUNDING  SUPPORT  AND  AUTHOR  DISCLOSURES
+The  REGARDS  study  is supported  by cooperative  agreement  U01
+NS041588  co-funded  by the NINDS  (National  Institute  of Neurolog -
+ical Disorders  and Stroke)  and the NIA  (National  Institute  on Aging),
+National  Institutes  of Health,  Department  of Health  and Human
+Services.  The  content  is solely  the responsibility  of the authors  and
+does  not necessarily  represent  the official  views  of the NINDS  or the
+NIA.  Representatives  of the NINDS  were  involved  in the review  of the
+manuscript  but were  not directly  involved  in the collection,  man-
+agement,  analysis,  or interpretation  of the data.  Additional  funding
+was  provided  by R01 HL80477  and R01 HL165452  from  the National
+Heart,  Lung,  and Blood  Institute  (NHLBI).  Representatives  fromNHLBI  did not have  any role  in the design  and conduct  of the study,
+the collection,  management,  analysis,  and interpretation  of the data
+or the preparation  or approval  of the manuscript.  Dr Khodneva  is
+supported  by the NHLBI  K23HL165037.  All other  authors  have  re-
+ported  that  they  have  no relationships  relevant  to the contents  of
+this  paper  to disclose.
+ADDRESS  FOR  CORRESPONDENCE:  Dr Yulia  Khod-
+neva,  Department  of Medicine,  School  of Medicine,
+University  of Alabama,  MT637  1717  11th  Avenue
+South,  Birmingham,  Alabama  35294-4410,  USA.
+E-mail:  ykhodneva@uabmc.edu .
+REFERENCES
+1. Tsao  CW, Aday  AW, Almarzooq  ZI, et al. Heart
+disease  and stroke  statistics—2023  update:  a
+report  from  the American  Heart  Association.  Cir-
+culation. 2023;147(8):e93–e621.  https://doi.org/
+10.1161/CIR.0000000000001123
+2. Lloyd-Jones  DM, Allen  NB, Anderson  CAM,
+et al. Life’s  Essential  8: updating  and enhancing
+the American  Heart  Association’s  construct  of
+cardiovascular  health:  a presidential  advisory
+from  the American  Heart  Association.  Circulation .2022;146(5):e18–e43 . https://doi.org/10.1161/
+CIR.0000000000001078
+3. Petermann-Rocha  F, Deo S, Celis-Morales  C,
+et al. An opportunity  for prevention:  associations
+between  the Life’s  Essential  8 score  and cardio-
+vascular  incidence  using  prospective  data  from  UK
+Biobank.  Curr Probl  Cardiol. 2023;48(4):101540.
+https://doi.org/10.1016/j.cpcardiol.2022.101540
+4. Kumar  M, Orkaby  A, Tighe  C, et al. Life’s
+Essential  8: optimizing  health  in older  adults.JACC  Adv. 2023;2(7):100560.  https://doi.org/10.
+1016/j.jacadv.2023.100560
+5. Howard  VJ, Cushman  M, Pulley  L, et al. The
+reasons  for geographic  and racial  differences  in
+stroke  study:  objectives  and design.  Neuro-
+epidemiology . 2005;25(3):135–143.  https://doi.
+org/10.1159/000086678
+KEY  WORDS  cardiovascular  health,
+diabetes,  heart  failure,  preventionKhodneva  et al JACC: HEART FAILURE VOL. 14, NO. 2, 2026
+Cardiovascular  Health  and Heart  Failure  in Diabetes  FEBRUARY 2026:1026864
+
+## User-Provided Context and Custom Content
+[No additional context provided — infer key themes only from approved source text above.]
+
+## Refinement Notes (if any)
+[None]

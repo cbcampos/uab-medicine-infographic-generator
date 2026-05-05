@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -104,6 +105,7 @@ logger = logging.getLogger(__name__)
 AZURE_API_VERSION_LOCKED = "2024-02-01"
 AZURE_IMAGE_PROMPT_MAX_CHARS = 32000
 AZURE_IMAGE_PROMPT_SAFETY_MARGIN = 200
+AZURE_IMAGE_READ_TIMEOUT_S = 420
 
 
 def _trim_prompt_section(prompt: str, section_title: str, max_chars: int, note: str) -> str:
@@ -209,6 +211,14 @@ def generate_image(
                 len(prompt),
                 len(prompt_to_send),
             )
+        prompt_hash = hashlib.sha256(prompt_to_send.encode("utf-8")).hexdigest()[:16]
+        prompt_preview = prompt_to_send[:1200].replace("\n", "\\n")
+        logger.info(
+            "Azure prompt payload: len=%s sha256_prefix=%s preview=%s",
+            len(prompt_to_send),
+            prompt_hash,
+            prompt_preview,
+        )
         azure_size = size if size in ("1024x1024", "1024x1792", "1792x1024") else "1792x1024"
         azure_endpoint = str(getattr(client, "_azure_endpoint", "")).rstrip("/")
         # Empirically validated against this project's LiteLLM/Azure proxy: image generation
@@ -226,7 +236,12 @@ def generate_image(
             "output_format": "png",
             "n": n,
         }
-        timeout = float(IMAGE_GEN_TIMEOUT_S)
+        timeout = httpx.Timeout(
+            connect=20.0,
+            read=float(AZURE_IMAGE_READ_TIMEOUT_S),
+            write=30.0,
+            pool=30.0,
+        )
         print(
             "[DEBUG] Calling Azure deployment image endpoint: "
             f"deployment='{model}', size={azure_size}, quality='{quality}', api_version={image_api_version}"
@@ -266,6 +281,11 @@ def generate_image(
         except Exception as azure_err:
             logger.error(f"Azure image generation failed: {azure_err}")
             err_msg = str(azure_err)
+            if "timed out" in err_msg.lower() or "readtimeout" in err_msg.lower():
+                raise RuntimeError(
+                    "Azure image generation timed out while waiting for the image payload. "
+                    "Try medium quality or 1024x1024 for faster completion, or retry."
+                ) from azure_err
             if "404" in err_msg or "Not Found" in err_msg:
                 raise RuntimeError(
                     f"Azure image generation failed with 404. "
@@ -381,27 +401,55 @@ def fetch_image_bytes(image_url_or_data: str) -> bytes:
         return resp.read()
 
 
-def composite_logo_footer(image_bytes: bytes, logo_path: Path) -> bytes:
-    """Paste approved logo onto a clean white footer strip (exact pixels from file)."""
+def composite_logo_footer(image_bytes: bytes, logo_path: Path, style_key: str = "") -> bytes:
+    """Paste approved logo inside the existing canvas (no added footer height)."""
     img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
     logo = Image.open(logo_path).convert("RGBA")
     w, h = img.size
-    footer_h = max(int(h * 0.11), 48)
-    bar = Image.new("RGBA", (w, footer_h), (255, 255, 255, 255))
+
+    style_key_norm = (style_key or "").lower()
+    is_chalkboard = "chalk" in style_key_norm
+    is_bold_graphic = ("bold" in style_key_norm) or ("comic" in style_key_norm)
+
+    # Keep logo constrained and style-aware.
+    margin = max(int(min(w, h) * 0.02), 12)
+    if is_bold_graphic:
+        max_logo_w = int(w * 0.18)
+        max_logo_h = int(h * 0.075)
+    elif is_chalkboard:
+        max_logo_w = int(w * 0.20)
+        max_logo_h = int(h * 0.085)
+    else:
+        max_logo_w = int(w * 0.24)
+        max_logo_h = int(h * 0.10)
     lw, lh = logo.size
-    pad = int(footer_h * 0.15)
-    max_logo_h = footer_h - 2 * pad
-    scale = min((w - 2 * pad) / lw, max_logo_h / lh, 1.0)
-    new_w, new_h = int(lw * scale), int(lh * scale)
+    scale = min(max_logo_w / max(lw, 1), max_logo_h / max(lh, 1), 1.0)
+    new_w, new_h = max(1, int(lw * scale)), max(1, int(lh * scale))
     logo_r = logo.resize((new_w, new_h), Image.Resampling.LANCZOS)
-    lx = (w - new_w) // 2
-    ly = footer_h - new_h - pad
-    if ly < pad:
-        ly = pad
-    bar.paste(logo_r, (lx, ly), logo_r)
-    out = Image.new("RGBA", (w, h + footer_h), (255, 255, 255, 255))
-    out.paste(img, (0, 0))
-    out.paste(bar, (0, h))
+
+    # Place bottom-right inside current canvas.
+    lx = w - new_w - margin
+    ly = h - new_h - margin
+
+    # White backing card for readability/compliance over busy backgrounds.
+    # Keep this tight to avoid a tall white block under the logo.
+    if is_bold_graphic:
+        card_pad_x = max(int(new_w * 0.05), 4)
+        card_pad_y = max(int(new_h * 0.08), 4)
+    elif is_chalkboard:
+        card_pad_x = max(int(new_w * 0.06), 5)
+        card_pad_y = max(int(new_h * 0.10), 5)
+    else:
+        card_pad_x = max(int(new_w * 0.08), 6)
+        card_pad_y = max(int(new_h * 0.14), 6)
+    card_x0 = max(0, lx - card_pad_x)
+    card_y0 = max(0, ly - card_pad_y)
+    card_x1 = min(w, lx + new_w + card_pad_x)
+    card_y1 = min(h, ly + new_h + card_pad_y)
+    card = Image.new("RGBA", (card_x1 - card_x0, card_y1 - card_y0), (255, 255, 255, 235))
+    img.alpha_composite(card, (card_x0, card_y0))
+
+    img.paste(logo_r, (lx, ly), logo_r)
     buf = io.BytesIO()
-    out.convert("RGB").save(buf, format="PNG")
+    img.convert("RGB").save(buf, format="PNG")
     return buf.getvalue()

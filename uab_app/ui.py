@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -63,10 +65,13 @@ from uab_app.constants import (
     OPENAI_DEFAULT_VISION_MODEL,
 )
 from uab_app.image_service import (
+    AZURE_IMAGE_PROMPT_MAX_CHARS,
+    AZURE_IMAGE_PROMPT_SAFETY_MARGIN,
     composite_logo_footer,
     fetch_image_bytes,
     generate_with_retry,
     make_client,
+    optimize_azure_image_prompt,
     resolve_logo_path,
     user_friendly_error,
 )
@@ -147,6 +152,10 @@ def init_session_state() -> None:
         st.session_state.comparison_results = []
     if "last_prompt" not in st.session_state:
         st.session_state.last_prompt = ""
+    if "last_effective_prompt" not in st.session_state:
+        st.session_state.last_effective_prompt = ""
+    if "last_effective_prompt_sha256" not in st.session_state:
+        st.session_state.last_effective_prompt_sha256 = ""
     if "last_image_bytes" not in st.session_state:
         st.session_state.last_image_bytes = None
     if "generation_history" not in st.session_state:
@@ -194,6 +203,56 @@ def set_progress(
         "**Progress:** Cleaning document text → Building prompt → Submitting to API "
         "→ Fetching image → Displaying  \n"
         f"**Current:** {stage}"
+    )
+
+
+def render_generation_placeholder(slot: Any, title: str = "Generating image...") -> None:
+    """Render an animated placeholder where the final image will appear."""
+    slot.markdown(
+        """
+        <style>
+        @keyframes uab-shimmer {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+        .uab-gen-wrap {
+            border: 1px solid #cfe3dc;
+            border-radius: 14px;
+            padding: 16px;
+            background: #f7fbf9;
+            margin-top: 8px;
+            margin-bottom: 8px;
+        }
+        .uab-gen-title {
+            font-weight: 700;
+            color: #1A5632;
+            margin-bottom: 10px;
+            font-size: 1rem;
+        }
+        .uab-gen-skeleton {
+            width: 100%;
+            height: 360px;
+            border-radius: 10px;
+            border: 1px solid #d9e8e2;
+            background: linear-gradient(90deg, #edf4f1 20%, #dbe9e3 40%, #edf4f1 60%);
+            background-size: 200% 100%;
+            animation: uab-shimmer 2.2s linear infinite;
+        }
+        .uab-gen-note {
+            margin-top: 10px;
+            color: #38655b;
+            font-size: 0.9rem;
+        }
+        </style>
+        """
+        f"""
+        <div class="uab-gen-wrap">
+            <div class="uab-gen-title">{title}</div>
+            <div class="uab-gen-skeleton"></div>
+            <div class="uab-gen-note">Building and rendering high-detail infographic…</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
 
@@ -356,6 +415,21 @@ def main() -> None:
         )
         if mode == "single":
             st.caption(STYLES[selected_style_key]["description"])
+            compare_style_keys: list[str] = []
+        else:
+            st.markdown("### 🔀 Styles to compare")
+            all_style_keys = list(STYLES.keys())
+            default_compare = all_style_keys[:3] if len(all_style_keys) >= 3 else all_style_keys
+            compare_style_keys = st.multiselect(
+                "Pick exactly 3 styles",
+                options=all_style_keys,
+                default=default_compare,
+                format_func=lambda k: STYLES[k]["name"],
+                key="compare_style_keys_multiselect",
+                max_selections=3,
+            )
+            if len(compare_style_keys) != 3:
+                st.warning("Pick exactly 3 styles for comparison mode.")
 
         st.markdown("---")
         logo_path = resolve_logo_path()
@@ -420,21 +494,6 @@ def main() -> None:
                 key="preferred_terms_text",
             )
             preferred_terms = [x.strip() for x in terms_raw.split(",") if x.strip()]
-
-        compare_style_keys: list[str] = []
-        if mode == "compare":
-            st.markdown("### 🔀 Pick 3 styles to compare")
-            keys = list(STYLES.keys())
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                s1 = st.selectbox("Style A", keys, index=0, key="cmp_s1")
-            with c2:
-                s2 = st.selectbox("Style B", keys, index=min(1, len(keys) - 1), key="cmp_s2")
-            with c3:
-                s3 = st.selectbox("Style C", keys, index=min(2, len(keys) - 1), key="cmp_s3")
-            compare_style_keys = [s1, s2, s3]
-            if len(set(compare_style_keys)) < 3:
-                st.warning("Choose three different styles for a meaningful comparison.")
 
         phi_ok = st.checkbox(
             "I confirm this content does NOT contain protected health information (PHI).",
@@ -1119,7 +1178,50 @@ def main() -> None:
             "**LLM document cleanup first**, then builds the prompt — so live prompts can differ slightly "
             "from this preview when files are attached."
         )
-        st.code(tentative_prompt[:12000] + ("\n...[truncated]..." if len(tentative_prompt) > 12000 else ""))
+        if provider == "azure":
+            max_prompt_len = AZURE_IMAGE_PROMPT_MAX_CHARS - AZURE_IMAGE_PROMPT_SAFETY_MARGIN
+            optimized_preview = optimize_azure_image_prompt(tentative_prompt, max_prompt_len)
+            st.caption(
+                f"Azure effective prompt preview (after optimization): "
+                f"{len(optimized_preview)} chars (limit {max_prompt_len})."
+            )
+            st.text_area(
+                "Effective prompt sent to Azure image endpoint",
+                value=optimized_preview,
+                height=420,
+                disabled=True,
+                key="effective_azure_prompt_preview",
+            )
+            if optimized_preview != tentative_prompt:
+                st.caption(
+                    f"Original prompt length before optimization: {len(tentative_prompt)} chars."
+                )
+        else:
+            st.caption(f"Prompt length: {len(tentative_prompt)} chars.")
+            st.text_area(
+                "Full prompt preview",
+                value=tentative_prompt,
+                height=420,
+                disabled=True,
+                key="full_prompt_preview",
+            )
+
+    with st.expander("Prompt sent to API (last run)", expanded=False):
+        sent_prompt = str(st.session_state.get("last_effective_prompt", "") or "")
+        sent_hash = str(st.session_state.get("last_effective_prompt_sha256", "") or "")
+        if sent_prompt:
+            st.caption(
+                f"Length: {len(sent_prompt)} chars | SHA-256: `{sent_hash}`"
+            )
+            st.text_area(
+                "Exact prompt body sent on last generation call",
+                value=sent_prompt,
+                height=420,
+                disabled=True,
+                key="sent_prompt_preview",
+            )
+        else:
+            st.caption("No generation run yet in this session.")
 
     credential_issue = ""
     if provider == "openai":
@@ -1147,8 +1249,8 @@ def main() -> None:
         readiness_issues.append("Resolve possible prompt-injection flags in context/documents.")
     if file_issues:
         readiness_issues.append("Fix upload issues (unsupported type or oversized file).")
-    if mode == "compare" and len(set(compare_style_keys)) < 3:
-        readiness_issues.append("Pick three different styles for comparison mode.")
+    if mode == "compare" and len(compare_style_keys) != 3:
+        readiness_issues.append("Pick exactly 3 styles for comparison mode.")
     if publication_fidelity_mode and fidelity_preflight:
         readiness_issues.append("Resolve publication fidelity preflight issues in chart references.")
 
@@ -1165,7 +1267,7 @@ def main() -> None:
         or bool(credential_issue)
         or bool(inj_rule_ids)
         or bool(file_issues)
-        or (mode == "compare" and len(set(compare_style_keys)) < 3)
+        or (mode == "compare" and len(compare_style_keys) != 3)
         or (publication_fidelity_mode and bool(fidelity_preflight))
     )
 
@@ -1187,11 +1289,15 @@ def main() -> None:
     progress_bar = st.progress(0.0)
     status_label = st.empty()
     error_box = st.empty()
+    image_preview_slot = st.empty()
+    timer_slot = st.empty()
 
     if generate_btn:
+        render_generation_placeholder(image_preview_slot, "Creating infographic...")
         ok, err_msg, client, image_model, chat_model = get_credentials()
         if not ok:
             error_box.error(err_msg)
+            image_preview_slot.empty()
             return
 
         assert client is not None
@@ -1230,28 +1336,94 @@ def main() -> None:
                     logo_extra,
                     chart_reference_block=gen_ref_block,
                 )
+                if provider == "azure":
+                    max_prompt_len = (
+                        AZURE_IMAGE_PROMPT_MAX_CHARS - AZURE_IMAGE_PROMPT_SAFETY_MARGIN
+                    )
+                    effective_prompt = optimize_azure_image_prompt(prompt, max_prompt_len)
+                else:
+                    effective_prompt = prompt
                 if store_prompt:
                     st.session_state.last_prompt = prompt
+                    st.session_state.last_effective_prompt = effective_prompt
+                    st.session_state.last_effective_prompt_sha256 = hashlib.sha256(
+                        effective_prompt.encode("utf-8")
+                    ).hexdigest()
                 t_req = time.perf_counter()
 
                 def submit_progress(attempt: int) -> None:
                     frac = 0.55 + 0.05 * attempt
                     set_progress(progress_bar, status_label, "Submitting to API", frac)
 
+                def run_with_visual_timer(
+                    fn: Any,
+                    target_seconds: int = 180,
+                    start_frac: float = 0.55,
+                    end_frac: float = 0.82,
+                ) -> Any:
+                    result: dict[str, Any] = {"value": None, "error": None}
+
+                    def _runner() -> None:
+                        try:
+                            result["value"] = fn()
+                        except BaseException as ex:
+                            result["error"] = ex
+
+                    worker = threading.Thread(target=_runner, daemon=True)
+                    worker.start()
+                    t0_wait = time.perf_counter()
+
+                    while worker.is_alive():
+                        elapsed = int(time.perf_counter() - t0_wait)
+                        mm = elapsed // 60
+                        ss = elapsed % 60
+                        progress_ratio = min(elapsed / max(target_seconds, 1), 1.0)
+                        gen_frac = start_frac + (end_frac - start_frac) * progress_ratio
+                        progress_bar.progress(min(1.0, max(0.0, gen_frac)))
+
+                        if elapsed <= target_seconds:
+                            status_label.markdown(
+                                "**Progress:** Cleaning document text → Building prompt → Submitting to API "
+                                "→ Fetching image → Displaying  \n"
+                                f"**Current:** Generating image ({mm:02d}:{ss:02d} / 03:00)"
+                            )
+                            timer_slot.info(
+                                f"Rendering in progress: {mm:02d}:{ss:02d} elapsed (target ~03:00)."
+                            )
+                        else:
+                            status_label.markdown(
+                                "**Progress:** Cleaning document text → Building prompt → Submitting to API "
+                                "→ Fetching image → Displaying  \n"
+                                f"**Current:** Generating image ({mm:02d}:{ss:02d})"
+                            )
+                            timer_slot.warning(
+                                f"Still generating ({mm:02d}:{ss:02d}). "
+                                "Complex infographic requests can finish any minute now."
+                            )
+                        time.sleep(1)
+
+                    worker.join()
+                    timer_slot.empty()
+                    if result["error"] is not None:
+                        raise result["error"]
+                    return result["value"]
+
                 try:
-                    image_ref = generate_with_retry(
-                        client,
-                        provider,
-                        image_model,
-                        prompt,
-                        size,
-                        quality,
-                        progress_callback=submit_progress,
+                    image_ref = run_with_visual_timer(
+                        lambda: generate_with_retry(
+                            client,
+                            provider,
+                            image_model,
+                            effective_prompt,
+                            size,
+                            quality,
+                            progress_callback=submit_progress,
+                        )
                     )
                     set_progress(progress_bar, status_label, "Fetching image", 0.82)
                     raw_bytes = fetch_image_bytes(image_ref)
                     if logo_file:
-                        raw_bytes = composite_logo_footer(raw_bytes, logo_file)
+                        raw_bytes = composite_logo_footer(raw_bytes, logo_file, style_id)
                     set_progress(progress_bar, status_label, "Displaying", 1.0)
                     out = {
                         "style_key": style_id,
@@ -1296,20 +1468,27 @@ def main() -> None:
                         logo_extra,
                         chart_reference_block=gen_ref_block,
                     )
+                    if provider == "azure":
+                        max_prompt_len = (
+                            AZURE_IMAGE_PROMPT_MAX_CHARS - AZURE_IMAGE_PROMPT_SAFETY_MARGIN
+                        )
+                        effective_prompt = optimize_azure_image_prompt(prompt, max_prompt_len)
+                    else:
+                        effective_prompt = prompt
                     t_req = time.perf_counter()
                     try:
                         image_ref = generate_with_retry(
                             client,
                             provider,
                             image_model,
-                            prompt,
+                            effective_prompt,
                             size,
                             quality,
                             progress_callback=None,
                         )
                         raw_bytes = fetch_image_bytes(image_ref)
                         if logo_file:
-                            raw_bytes = composite_logo_footer(raw_bytes, logo_file)
+                            raw_bytes = composite_logo_footer(raw_bytes, logo_file, sid)
                         latency = int((time.perf_counter() - t_req) * 1000)
                         audit_log(
                             session_id,
@@ -1341,10 +1520,44 @@ def main() -> None:
 
                 with ThreadPoolExecutor(max_workers=3) as pool:
                     futs = [pool.submit(parallel_worker, sid) for sid in styles_to_run]
+                    t0_wait = time.perf_counter()
+                    target_seconds = 180
+                    while True:
+                        done_count = sum(1 for f in futs if f.done())
+                        if done_count == len(futs):
+                            break
+                        elapsed = int(time.perf_counter() - t0_wait)
+                        mm = elapsed // 60
+                        ss = elapsed % 60
+                        progress_ratio = min(elapsed / max(target_seconds, 1), 1.0)
+                        gen_frac = 0.55 + (0.82 - 0.55) * progress_ratio
+                        progress_bar.progress(min(1.0, max(0.0, gen_frac)))
+                        if elapsed <= target_seconds:
+                            status_label.markdown(
+                                "**Progress:** Cleaning document text → Building prompt → Submitting to API "
+                                "→ Fetching image → Displaying  \n"
+                                f"**Current:** Generating 3 styles in parallel ({done_count}/3 done, {mm:02d}:{ss:02d} / 03:00)"
+                            )
+                            timer_slot.info(
+                                f"Rendering 3 styles in parallel: {done_count}/3 complete, "
+                                f"{mm:02d}:{ss:02d} elapsed (target ~03:00)."
+                            )
+                        else:
+                            status_label.markdown(
+                                "**Progress:** Cleaning document text → Building prompt → Submitting to API "
+                                "→ Fetching image → Displaying  \n"
+                                f"**Current:** Generating 3 styles in parallel ({done_count}/3 done, {mm:02d}:{ss:02d})"
+                            )
+                            timer_slot.warning(
+                                f"Still generating comparison set ({done_count}/3 complete, {mm:02d}:{ss:02d}). "
+                                "Complex requests can finish any minute now."
+                            )
+                        time.sleep(1)
                     by_sid: dict[str, dict[str, Any]] = {}
                     for fut in futs:
                         row = fut.result()
                         by_sid[row["style_key"]] = row
+                timer_slot.empty()
                 results = [by_sid[sid] for sid in styles_to_run]
                 set_progress(progress_bar, status_label, "Displaying", 1.0)
             else:
@@ -1371,9 +1584,13 @@ def main() -> None:
 
             progress_bar.progress(1.0)
             st.success("Done.")
+            image_preview_slot.empty()
+            timer_slot.empty()
 
         except BaseException as exc:
             error_box.error(user_friendly_error(exc))
+            image_preview_slot.empty()
+            timer_slot.empty()
             audit_log(
                 session_id,
                 provider,
