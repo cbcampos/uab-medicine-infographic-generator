@@ -170,6 +170,8 @@ def init_session_state() -> None:
         st.session_state.last_refinements_scan = None
     if "last_refinements_scan_context" not in st.session_state:
         st.session_state.last_refinements_scan_context = {}
+    if "show_style_guide" not in st.session_state:
+        st.session_state.show_style_guide = False
     if "last_image_bytes" not in st.session_state:
         st.session_state.last_image_bytes = None
     if "generation_history" not in st.session_state:
@@ -295,6 +297,43 @@ def main() -> None:
         "use a qualified graphic designer/content owner before publication."
     )
 
+    def open_style_guide_dialog() -> None:
+        @st.dialog("Style guide: example outputs")
+        def _style_dialog() -> None:
+            st.caption(
+                "Use these examples to choose a visual style. "
+                "Examples are generated from the same source pack for side-by-side comparison."
+            )
+            ex_dir = Path(__file__).resolve().parent.parent / "assets" / "style_examples"
+            style_items = list(STYLES.items())
+            for i in range(0, len(style_items), 2):
+                cols = st.columns(2)
+                for j, col in enumerate(cols):
+                    if i + j >= len(style_items):
+                        continue
+                    style_key, meta = style_items[i + j]
+                    with col:
+                        st.markdown(f"**{meta['name']}**")
+                        img_p = ex_dir / f"{style_key}.png"
+                        if img_p.is_file():
+                            st.image(str(img_p), use_container_width=True)
+                        else:
+                            st.info("No sample image generated yet.")
+                        st.caption(meta.get("description", ""))
+                        if st.button(
+                            "Use this style",
+                            key=f"use_style_from_guide_{style_key}",
+                            use_container_width=True,
+                        ):
+                            st.session_state.single_style = style_key
+                            st.session_state.show_style_guide = False
+                            st.rerun()
+            if st.button("Close", key="close_style_guide", use_container_width=True):
+                st.session_state.show_style_guide = False
+                st.rerun()
+
+        _style_dialog()
+
     def _autodetect_provider() -> str:
         if (
             os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
@@ -306,6 +345,9 @@ def main() -> None:
         if os.environ.get("GEMINI_API_KEY", "").strip():
             return "gemini"
         return "azure"
+
+    if st.session_state.get("show_style_guide", False):
+        open_style_guide_dialog()
 
     with st.sidebar:
         experience_mode = st.radio(
@@ -333,7 +375,7 @@ def main() -> None:
                     if p == "openai"
                     else ("🔷 Azure OpenAI (GPT Image 2)" if p == "azure" else "🟣 Gemini")
                 ),
-                index=0,
+                index=1,
                 horizontal=False,
                 key="sidebar_provider",
             )
@@ -457,8 +499,17 @@ def main() -> None:
 
         st.markdown("### 📋 Style (single mode)")
         if experience_mode == "basic":
-            selected_style_key = "uab-craft-handmade"
-            st.caption("Using default style: UAB Craft Handmade")
+            selected_style_key = st.selectbox(
+                "Style",
+                options=list(STYLES.keys()),
+                format_func=lambda k: STYLES[k]["name"],
+                index=list(STYLES.keys()).index(
+                    st.session_state.get("single_style", "uab-craft-handmade")
+                )
+                if st.session_state.get("single_style", "uab-craft-handmade") in STYLES
+                else 0,
+                key="single_style",
+            )
         else:
             selected_style_key = st.selectbox(
                 "Visual style",
@@ -485,6 +536,10 @@ def main() -> None:
             )
             if len(compare_style_keys) != 3:
                 st.warning("Pick exactly 3 styles for comparison mode.")
+
+        if st.button("🖼️ Open style guide", key="btn_open_style_guide", use_container_width=True):
+            st.session_state.show_style_guide = True
+            st.rerun()
 
         st.markdown("---")
         logo_path = resolve_logo_path()
@@ -830,6 +885,7 @@ def main() -> None:
             st.caption("Tip: switch to Advanced anytime to adjust style, compare variants, or add chart references.")
 
     has_chart_inputs = False
+    phi_ok = bool(st.session_state.get("phi_confirm", False))
     step_context_ready = bool(sanitized_context.strip() or extracted_preview)
     step_refs_ready = False
     step_generate_ready = bool(phi_ok and not inj_rule_ids and not file_issues)
@@ -2121,7 +2177,6 @@ def main() -> None:
                         st.session_state.refinement_notes = apply_txt
                         st.session_state.refinement_loop_area = apply_txt
                         st.success("Copied into refinement notes (scroll down to edit if needed).")
-                        st.rerun()
                 with ap2:
                     if st.button(
                         "Apply refinements & generate now",
@@ -2157,7 +2212,6 @@ def main() -> None:
                 use_container_width=True,
             ):
                 st.session_state.refinement_notes = refinement
-                st.rerun()
         with rb2:
             if st.button(
                 "⚡ Save + Generate now",
@@ -2168,7 +2222,6 @@ def main() -> None:
             ):
                 st.session_state.refinement_notes = refinement
                 st.session_state.refine_generate_now = True
-                st.rerun()
         if st.button(
             "🧭 Guided refine (use current image)",
             key="btn_guided_refine_generate",

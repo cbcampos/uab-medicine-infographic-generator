@@ -149,6 +149,18 @@ def _infer_topic_anchor(cleaned_document_texts: list[str], user_context: str) ->
     return "the provided source document"
 
 
+def _extract_explicit_title(user_context: str) -> str:
+    """Allow users to force a title via 'Title: ...' or 'Headline: ...'."""
+    txt = (user_context or "").strip()
+    if not txt:
+        return ""
+    m = re.search(r"(?im)^(?:title|headline)\s*:\s*(.+)$", txt)
+    if not m:
+        return ""
+    t = _compact_ws(m.group(1))
+    return t[:140]
+
+
 def build_infographic_prompt(
     style_id: str,
     user_context: str,
@@ -167,6 +179,7 @@ def build_infographic_prompt(
     doc_evidence_snapshot = _extract_doc_evidence_snapshot(cleaned_document_texts)
     chart_snapshot = _extract_chart_snapshot(chart_reference_block)
     topic_anchor = _infer_topic_anchor(cleaned_document_texts, user_context)
+    explicit_title = _extract_explicit_title(user_context)
 
     refinement_block = refinement_notes.strip() if refinement_notes.strip() else "[None]"
 
@@ -202,10 +215,20 @@ def build_infographic_prompt(
         else "  - [No claim-evidence pairs inferred; only use directly sourced claims.]"
     )
 
-    primary_deliverable = (
-        user_context.strip()
-        if user_context.strip()
-        else (inferred_objective if inferred_objective else {
+    user_goal = _compact_ws(user_context)
+    if user_goal:
+        if explicit_title:
+            primary_deliverable = (
+                f"Create an infographic aligned to this objective: {user_goal}. "
+                f'Use this exact title text: "{explicit_title}".'
+            )
+        else:
+            primary_deliverable = (
+                f"Create an infographic aligned to this objective: {user_goal}. "
+                "Treat this as intent and direction, not as literal on-image title text."
+            )
+    else:
+        primary_deliverable = (inferred_objective if inferred_objective else {
             "academic": (
                 "Create an academic infographic that summarizes the key evidence from "
                 f"{topic_anchor} for a research audience. "
@@ -227,7 +250,6 @@ def build_infographic_prompt(
                 "Use a compelling story flow and include a clear 'Why this matters' section with practical community impact."
             ),
         }.get(audience_key, "Create a focused infographic using the provided evidence."))
-    )
     if ref_title:
         primary_deliverable += f" Use '{ref_title}' as a central section heading."
 
@@ -250,6 +272,12 @@ def build_infographic_prompt(
 - BOTTOM: Clean white band for logo placement (bottom-right or bottom-center)
 - Leave generous negative space — do NOT crowd the layout
 - When specific text must appear in the image, write it EXACTLY as it should appear (use ALL CAPS for headings, spell out all technical/medical terms letter by letter)
+
+## Title Generation Rules (STRICT)
+- Generate a concise, audience-appropriate infographic title from the source evidence and objective.
+- Do NOT copy the entire user context/objective sentence as the title.
+- If user context includes `Title:` or `Headline:`, use that exact value as the title.
+- Otherwise, create a polished title (about 6-12 words) that reflects the actual project/topic.
 
 ## Style Guidelines
 {style["prompt"]}
