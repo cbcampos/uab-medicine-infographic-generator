@@ -309,4 +309,46 @@ STYLES: dict[str, dict[str, str]] = {
 - Flickering or pulsing text effects
 """,
     },
+    "uab-poster-classic-experimental": {
+        "name": "UAB Poster Classic (Experimental)",
+        "description": "Academic poster layout with top brand bar, centered title, and multi-column content blocks",
+        "color_palette": """
+- Primary: UAB Green (#1A5632), White (#FFFFFF)
+- Background: Light Gray (#F2F2F2) or White (#FFFFFF)
+- Text: Dark Gray (#1F2933) and near-black for body copy
+- Accent: Healing Teal (#08948E) sparingly for subtitle emphasis
+""",
+        "prompt": """
+## Color Palette
+- Primary: UAB Green (#1A5632), White (#FFFFFF)
+- Background: Light Gray (#F2F2F2) or White (#FFFFFF)
+- Text: Dark Gray (#1F2933) and near-black for body copy
+- Accent: Healing Teal (#08948E) used sparingly for subtitle emphasis
+
+## Poster Layout Structure (STRICT)
+- Build a clean academic poster composition (16:9 landscape) with strong grid alignment.
+- TOP EDGE: thin UAB Green horizontal brand strip.
+- HEADER BLOCK (centered): large poster title, subtitle below it, and a short horizontal divider line.
+- BODY: 4-column poster-style layout with clear section blocks and ample spacing.
+- Include section headings such as: Abstract, Introduction, Methodology, Results, Acknowledgements, Conclusion.
+- Add one emphasized recommendation/callout panel in UAB Green with white text.
+- Include 1-2 rectangular image/photo placeholder areas integrated into the column layout.
+- Use thin UAB Green divider lines between major columns/sections.
+- Keep overall look clean, institutional, and publication-ready (not playful, not comic, not watercolor).
+
+## Visual Style Rules
+- Flat, professional poster aesthetic with minimal decoration.
+- Strong hierarchy: title > section headers > body text > bullets.
+- Use bullet lists where appropriate for methods/results summaries.
+- Avoid clutter: prioritize whitespace and alignment.
+- No heavy gradients, shadows, or noisy textures.
+
+## Typography
+- Use a clean sans-serif poster style (Source Sans / Open Sans equivalent feel).
+- Title in UAB Green, bold and uppercase-like emphasis.
+- Subtitle in green/teal and smaller than title.
+- Section headers bold and high-contrast.
+- Body text readable and compact for poster scanning distance.
+""",
+    },
 }

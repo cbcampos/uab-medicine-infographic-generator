@@ -172,6 +172,8 @@ def init_session_state() -> None:
         st.session_state.last_refinements_scan_context = {}
     if "show_style_guide" not in st.session_state:
         st.session_state.show_style_guide = False
+    if "single_style" not in st.session_state:
+        st.session_state.single_style = "uab-craft-handmade"
     if "last_image_bytes" not in st.session_state:
         st.session_state.last_image_bytes = None
     if "generation_history" not in st.session_state:
@@ -272,6 +274,145 @@ def render_generation_placeholder(slot: Any, title: str = "Generating image...")
     )
 
 
+def apply_uab_brand_css() -> None:
+    """Apply a UAB-inspired visual skin for Streamlit controls/layout."""
+    st.markdown(
+        """
+        <style>
+        :root {
+            --uab-green: #1A5632;
+            --uab-navy: #003A5C;
+            --uab-gold: #FFC72C;
+            --uab-teal: #08948E;
+            --uab-border: #d8e8e2;
+            --uab-soft: #f7fbf9;
+        }
+
+        .stApp {
+            background: linear-gradient(180deg, #f3f6f8 0%, #eef3f6 100%);
+        }
+
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #f6faf8 0%, #eef6f2 100%);
+            border-right: 1px solid var(--uab-border);
+        }
+
+        .uab-site-wrap {
+            border: 1px solid #d8e3e8;
+            border-radius: 14px;
+            overflow: hidden;
+            margin-bottom: 14px;
+            background: #fff;
+            box-shadow: 0 8px 24px rgba(8, 35, 53, 0.08);
+        }
+        .uab-topline {
+            background: #0f5d38;
+            color: #eaf5ef;
+            font-size: 0.82rem;
+            padding: 7px 18px;
+            display: flex;
+            justify-content: space-between;
+            letter-spacing: 0.2px;
+        }
+        .uab-topline strong { color: #fff; font-weight: 700; }
+        .uab-mainnav {
+            background: #fff;
+            border-bottom: 1px solid #e2eaee;
+            padding: 14px 18px 10px;
+        }
+        .uab-brand {
+            color: #0f2434;
+            font-size: 2rem;
+            line-height: 1.06;
+            margin: 0;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+        .uab-brand-sub {
+            margin: 4px 0 0;
+            color: #355264;
+            font-size: 0.92rem;
+        }
+        .uab-hero {
+            background:
+              radial-gradient(circle at 22% 22%, rgba(255, 199, 44, 0.18), transparent 42%),
+              radial-gradient(circle at 78% 42%, rgba(8, 148, 142, 0.16), transparent 44%),
+              linear-gradient(120deg, #00263f 0%, #003a5c 52%, #0a5f53 100%);
+            color: #fff;
+            padding: 28px 20px;
+        }
+        .uab-hero h2 {
+            margin: 0;
+            font-size: 2.15rem;
+            line-height: 1.1;
+            letter-spacing: -0.02em;
+            max-width: 760px;
+        }
+        .uab-hero p {
+            margin: 10px 0 0;
+            color: #dbe7ee;
+            max-width: 760px;
+            font-size: 1rem;
+        }
+
+        h3 {
+            color: #12374c;
+            letter-spacing: -0.01em;
+            font-weight: 700 !important;
+        }
+
+        [data-testid="stExpander"] {
+            border: 1px solid var(--uab-border);
+            border-radius: 12px;
+            background: #fff;
+            box-shadow: 0 4px 12px rgba(16, 39, 54, 0.06);
+        }
+
+        [data-testid="stExpander"] summary {
+            background: var(--uab-soft);
+            border-radius: 12px;
+            padding: 0.35rem 0.6rem;
+        }
+
+        .stTextArea textarea, .stTextInput input, .stSelectbox select {
+            border-radius: 10px !important;
+            border: 1px solid #cfded8 !important;
+        }
+
+        div[data-testid="stButton"] > button {
+            border-radius: 10px;
+            border: 1px solid #c7dad3;
+            font-weight: 600;
+        }
+
+        div[data-testid="stButton"] > button[kind="primary"] {
+            background: linear-gradient(135deg, var(--uab-green), #226d40);
+            color: white;
+            border: none;
+            box-shadow: 0 2px 8px rgba(26, 86, 50, 0.25);
+        }
+
+        div[data-testid="stButton"] > button[kind="secondary"] {
+            background: white;
+            color: var(--uab-navy);
+        }
+        div[data-testid="stButton"] > button:hover {
+            transform: translateY(-1px);
+        }
+
+        [data-testid="stAlert"] {
+            border-radius: 10px;
+        }
+
+        hr {
+            border-color: #d7e7e2 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ─── Main app ───────────────────────────────────────────────────
 def main() -> None:
     st.set_page_config(
@@ -279,16 +420,27 @@ def main() -> None:
         page_icon="🖼️",
         layout="wide",
     )
+    apply_uab_brand_css()
     init_session_state()
     session_id = st.session_state.session_id
 
     st.markdown(
-        "<div style='background:#1A5632;padding:16px 24px;border-radius:8px;margin-bottom:24px'>"
-        "<h1 style='color:white;margin:0;font-family:Source Sans Pro,sans-serif'>"
-        "🖼️ Infographic Generator</h1>"
-        "<p style='color:#FFC72C;margin:4px 0 0;font-size:14px'>"
-        "Image generation via OpenAI, Azure OpenAI, or Gemini"
-        "</p></div>",
+        """
+        <div class="uab-site-wrap">
+            <div class="uab-topline">
+                <div><strong>UAB MEDICINE</strong> | Infographic Studio</div>
+                <div>Explore UAB Medicine</div>
+            </div>
+            <div class="uab-mainnav">
+                <h1 class="uab-brand">Infographic Generator</h1>
+                <p class="uab-brand-sub">Clinical and community communication design workspace</p>
+            </div>
+            <div class="uab-hero">
+                <h2>Turn source evidence into polished UAB-style infographic concepts.</h2>
+                <p>Generate draft visuals rapidly, compare styles, and refine with AI-guided feedback.</p>
+            </div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
     st.warning(
@@ -503,11 +655,6 @@ def main() -> None:
                 "Style",
                 options=list(STYLES.keys()),
                 format_func=lambda k: STYLES[k]["name"],
-                index=list(STYLES.keys()).index(
-                    st.session_state.get("single_style", "uab-craft-handmade")
-                )
-                if st.session_state.get("single_style", "uab-craft-handmade") in STYLES
-                else 0,
                 key="single_style",
             )
         else:
@@ -515,7 +662,6 @@ def main() -> None:
                 "Visual style",
                 options=list(STYLES.keys()),
                 format_func=lambda k: STYLES[k]["name"],
-                index=0,
                 key="single_style",
                 disabled=(mode == "compare"),
             )
