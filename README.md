@@ -1,12 +1,12 @@
 # Infographic Generator
 
-Generate production-ready infographics using GPT Image 2.0 (OpenAI direct, Azure OpenAI, or Gemini image models where configured). Suited to academic medicine workflows — with optional logo compositing, PHI safeguards, audience targeting, and strict chart accuracy guidance.
+Generate infographic drafts and style concepts using GPT Image 2.0 (OpenAI direct, Azure OpenAI, or Gemini image models where configured). Suited to academic medicine workflows — with optional logo compositing, PHI safeguards, audience targeting, and strict chart accuracy guidance.
 
 ---
 
 ## Features
 
-### 🎨 Visual Styles (10 curated styles)
+### 🎨 Visual Styles (11 curated styles)
 | Style | Best for |
 |---|---|
 | Hand-drawn Paper Craft | Patient education, community outreach |
@@ -19,6 +19,13 @@ Generate production-ready infographics using GPT Image 2.0 (OpenAI direct, Azure
 | Kawaii (Japanese Cute) | Pediatric/family health, friendly materials |
 | Claymation | Community engagement, warm tones |
 | Cyberpunk Neon | Tech-forward, futuristic health topics |
+| Poster Classic (Experimental) | Academic poster layout inspired by UAB-style research posters |
+
+### 🧭 UX Modes
+- **Basic mode** — one-shot flow for first-time users (upload sources → generate)
+- **Advanced mode** — full controls for provider/model settings, chart references, fidelity checks, compare mode
+- **Step-based navigation** — collapsible Step 1/2/3 sections for guided completion
+- **Style guide modal** — preview generated examples for each style before choosing
 
 ### 🎯 Audience Targeting
 Tailor tone, vocabulary, and visual density to your exact audience:
@@ -52,10 +59,12 @@ Tailor tone, vocabulary, and visual density to your exact audience:
 ### 🔁 Generation Tools
 
 - **Style Comparison** — generate the same content in 3 styles simultaneously, side-by-side
-- **Image Refinement** — iterative feedback loop (up to 3 passes) to fine-tune results
+- **Image Refinement** — iterative feedback loop to fine-tune results
+- **Refinements Scan (Vision)** — AI grades the generated image and proposes practical edits
+- **Use AI Suggestions** — one-click apply scan suggestions and regenerate
 - **Prompt Preview** — audit the full prompt before it is sent to the API
 - **Generation Progress** — staged progress bar: Parsing → Cleaning → Building → Generating → Fetching
-- **Retry Logic** — 3 automatic retries with exponential backoff, 90s hard timeout
+- **Retry Logic** — automatic retries with exponential backoff
 
 ### 📄 Document Ingestion
 Upload PDFs, DOCX, or TXT files as source context. Content is:
@@ -112,9 +121,11 @@ OPENAI_API_KEY=sk-...
 ```
 AZURE_OPENAI_API_KEY=your-key
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
-AZURE_OPENAI_API_VERSION=2024-12-01-preview
 AZURE_OPENAI_IMAGE_MODEL=gpt-image-2
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o-mini
+AZURE_OPENAI_VISION_DEPLOYMENT=gpt-4o
 ```
+> Note: the app is locked to Azure API version `2024-02-01` internally for compatibility.
 
 ### 4. Run
 
@@ -129,15 +140,15 @@ Open [http://localhost:8502](http://localhost:8502)
 ## Architecture
 
 ```
-infographic_app.py     ← all-in-one Streamlit app
-├── Style library      ← 10 curated visual styles
-├── Document parsers    ← PDF (PyPDF2), DOCX (python-docx), TXT
-├── LLM cleanup        ← PHI scrub + OCR normalization via LLM
-├── Prompt builder     ← assembles style + audience + docs + rules
-├── Image generator    ← OpenAI, Azure OpenAI, or Gemini (where configured)
-├── Logo compositor    ← Pillow composites approved logo post-generation
-├── Retry logic        ← 3x backoff on failure
-└── Audit logger      ← JSON logs (no prompts stored)
+infographic_app.py           ← Streamlit entrypoint
+uab_app/ui.py                ← UI flow (basic/advanced, step navigation, style guide modal)
+uab_app/styles.py            ← 11 curated visual styles
+uab_app/prompts.py           ← prompt builder + hard constraints
+uab_app/cleanup.py           ← LLM document cleanup + source profile inference
+uab_app/image_service.py     ← model calls, retry logic, logo compositing
+uab_app/charts.py            ← chart extraction/QA/fidelity helpers
+uab_app/parsers.py           ← PDF/DOCX/TXT parsing
+generate_style_examples.py   ← batch style example generation script
 ```
 
 ---
@@ -152,7 +163,19 @@ Every generation runs through multiple enforcement layers:
 4. **PHI checkbox** — blocks generation without confirmation
 5. **Document LLM scrub** — removes PHI-adjacent content before prompt assembly
 6. **Input sanitization** — strips control chars, detects injection attempts
-7. **Prompt preview** — user audits prompt before API call
+7. **Prompt preview** — user audits prompt before API call (Advanced mode)
+
+---
+
+## Style Example Generation
+
+Generate/refresh style examples (saved under `assets/style_examples/`):
+
+```bash
+.venv/bin/python generate_style_examples.py "/absolute/path/to/source.pdf"
+```
+
+The script mirrors app behavior (cleanup + inferred profile + prompt builder + same image dimensions).
 
 ---
 
@@ -181,4 +204,4 @@ See the repository root for license and use terms.
 
 ---
 
-> Built on the [notex](https://github.com/smallnest/notex) infographic prompt architecture. Powered by GPT Image 2.0 via OpenAI API.
+> Built with inspiration from the [notex](https://github.com/smallnest/notex) infographic prompt architecture. Powered by GPT Image 2.0.
