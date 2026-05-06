@@ -289,24 +289,57 @@ def main() -> None:
         "</p></div>",
         unsafe_allow_html=True,
     )
+    st.warning(
+        "For ideation only — not for production use. Generated infographics may contain hallucinations, "
+        "inaccurate numbers, or misleading wording. Always perform human review and final editing, and "
+        "use a qualified graphic designer/content owner before publication."
+    )
+
+    def _autodetect_provider() -> str:
+        if (
+            os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
+            and os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+        ):
+            return "azure"
+        if os.environ.get("OPENAI_API_KEY", "").strip():
+            return "openai"
+        if os.environ.get("GEMINI_API_KEY", "").strip():
+            return "gemini"
+        return "azure"
 
     with st.sidebar:
-        st.markdown("### ⚙️ API Configuration")
-        provider = st.radio(
-            "Provider",
-            options=["openai", "azure", "gemini"],
-            format_func=lambda p: (
-                "🟢 OpenAI (GPT Image 2)"
-                if p == "openai"
-                else ("🔷 Azure OpenAI (GPT Image 2)" if p == "azure" else "🟣 Gemini")
-            ),
+        experience_mode = st.radio(
+            "Experience",
+            options=["basic", "advanced"],
+            format_func=lambda m: "Basic (recommended)" if m == "basic" else "Advanced",
             index=0,
-            horizontal=False,
-            key="sidebar_provider",
+            key="ux_experience_mode",
+            help="Basic keeps the workflow simple. Advanced exposes full controls.",
         )
         st.markdown("---")
+        if experience_mode == "basic":
+            provider = st.session_state.get("sidebar_provider", _autodetect_provider())
+            st.caption(
+                "Basic mode uses saved/environment API settings automatically. "
+                "Switch to Advanced to change provider and model deployments."
+            )
+        else:
+            st.markdown("### ⚙️ API Configuration")
+            provider = st.radio(
+                "Provider",
+                options=["openai", "azure", "gemini"],
+                format_func=lambda p: (
+                    "🟢 OpenAI (GPT Image 2)"
+                    if p == "openai"
+                    else ("🔷 Azure OpenAI (GPT Image 2)" if p == "azure" else "🟣 Gemini")
+                ),
+                index=0,
+                horizontal=False,
+                key="sidebar_provider",
+            )
+            st.markdown("---")
 
-        if provider == "openai":
+        if experience_mode == "advanced" and provider == "openai":
             with st.expander("🔑 OpenAI", expanded=True):
                 st.text_input(
                     "API Key",
@@ -332,7 +365,7 @@ def main() -> None:
                     key="openai_image_model",
                     help="Must match an image-capable model available to your API key (e.g. gpt-image-2).",
                 )
-        elif provider == "azure":
+        elif experience_mode == "advanced" and provider == "azure":
             with st.expander("🔷 Azure OpenAI", expanded=True):
                 st.text_input(
                     "API Key",
@@ -379,7 +412,7 @@ def main() -> None:
                     key="azure_vision_deployment",
                     help="Deployment name for gpt-4o-class vision model",
                 )
-        else:
+        elif experience_mode == "advanced":
             with st.expander("🟣 Gemini", expanded=True):
                 st.text_input(
                     "API Key",
@@ -411,22 +444,30 @@ def main() -> None:
 
         st.markdown("---")
         st.markdown("### 🎯 Generation mode")
-        mode = st.radio(
-            "Mode",
-            options=["single", "compare"],
-            format_func=lambda m: "Single style" if m == "single" else "Style comparison (3-way)",
-            key="gen_mode",
-        )
+        if experience_mode == "basic":
+            mode = "single"
+            st.caption("One-shot workflow: upload sources and generate.")
+        else:
+            mode = st.radio(
+                "Mode",
+                options=["single", "compare"],
+                format_func=lambda m: "Single style" if m == "single" else "Style comparison (3-way)",
+                key="gen_mode",
+            )
 
         st.markdown("### 📋 Style (single mode)")
-        selected_style_key = st.selectbox(
-            "Visual style",
-            options=list(STYLES.keys()),
-            format_func=lambda k: STYLES[k]["name"],
-            index=0,
-            key="single_style",
-            disabled=(mode == "compare"),
-        )
+        if experience_mode == "basic":
+            selected_style_key = "uab-craft-handmade"
+            st.caption("Using default style: UAB Craft Handmade")
+        else:
+            selected_style_key = st.selectbox(
+                "Visual style",
+                options=list(STYLES.keys()),
+                format_func=lambda k: STYLES[k]["name"],
+                index=0,
+                key="single_style",
+                disabled=(mode == "compare"),
+            )
         if mode == "single":
             st.caption(STYLES[selected_style_key]["description"])
             compare_style_keys: list[str] = []
@@ -455,84 +496,107 @@ def main() -> None:
                 "Post-processing will composite the approved logo when the file is available."
             )
 
-    col_main, col_doc = st.columns([1, 1])
+    step1_open = True
+    step2_open = bool(st.session_state.get("docs_uploader"))
+    step3_open = False
 
-    with col_main:
-        st.markdown("### 👥 Audience")
-        audience = st.radio(
-            "Who is this for?",
-            options=["academic", "clinical", "patient", "community"],
-            format_func=lambda a: {
-                "academic": "Academic / research",
-                "clinical": "Clinical / HCP",
-                "patient": "Patient / lay audience",
-                "community": "Community outreach",
-            }[a],
-            horizontal=True,
-            key="audience_radio",
-        )
+    with st.expander("Step 1: Add sources and topic", expanded=step1_open):
+        col_main, col_doc = st.columns([1, 1])
 
-        st.markdown("### ✏️ Context")
-        user_context = st.text_area(
-            "Describe the topic and key points",
-            height=200,
-            key="user_context_area",
-            placeholder="Be specific. Only include data you want shown on charts.",
-        )
+        with col_main:
+            if experience_mode == "basic":
+                audience = "academic"
+                st.markdown("### 🚀 One-shot generation")
+                st.caption("Upload sources, add an optional goal, and generate.")
+                user_context = st.text_area(
+                    "Optional: one-sentence goal",
+                    height=90,
+                    key="user_context_area",
+                    placeholder="e.g. Create a clean summary infographic highlighting the main findings.",
+                )
+            else:
+                st.markdown("### 👥 Audience")
+                audience = st.radio(
+                    "Who is this for?",
+                    options=["academic", "clinical", "patient", "community"],
+                    format_func=lambda a: {
+                        "academic": "Academic / research",
+                        "clinical": "Clinical / HCP",
+                        "patient": "Patient / lay audience",
+                        "community": "Community outreach",
+                    }[a],
+                    horizontal=True,
+                    key="audience_radio",
+                )
 
-        size = st.selectbox(
-            "Image size",
-            options=["1024x1024", "1024x1792", "1792x1024"],
-            index=2,
-            key="img_size",
-            help="1792x1024 = 16:9 (recommended for infographics) | 2K (2560x1440) is supported but flagged as experimental by OpenAI — results may be more variable above this resolution",
-        )
-        quality = st.selectbox("Quality", options=["high", "medium"], index=0, key="img_quality")
-        publication_fidelity_mode = st.checkbox(
-            "Publication fidelity mode (strict chart/text/citation QA before download)",
-            value=False,
-            key="publication_fidelity_mode",
-        )
-        expected_citation = ""
-        preferred_terms: list[str] = []
-        if publication_fidelity_mode:
-            expected_citation = st.text_input(
-                "Expected citation text (optional)",
-                value="",
-                key="expected_citation_text",
-                placeholder="e.g. JACC: Heart Failure. 2026;14(2):102686. doi:10.1016/j.jchf.2025.102686",
+                st.markdown("### ✏️ Context")
+                user_context = st.text_area(
+                    "Describe the topic and key points",
+                    height=200,
+                    key="user_context_area",
+                    placeholder="Be specific. Only include data you want shown on charts.",
+                )
+
+            size = "1792x1024"
+            quality = "high"
+            publication_fidelity_mode = False
+            expected_citation = ""
+            preferred_terms: list[str] = []
+            if experience_mode == "advanced":
+                with st.expander("Advanced generation settings", expanded=True):
+                    size = st.selectbox(
+                        "Image size",
+                        options=["1024x1024", "1024x1792", "1792x1024"],
+                        index=2,
+                        key="img_size",
+                        help="1792x1024 = 16:9 (recommended for infographics) | 2K (2560x1440) is supported but flagged as experimental by OpenAI — results may be more variable above this resolution",
+                    )
+                    quality = st.selectbox("Quality", options=["high", "medium"], index=0, key="img_quality")
+                    publication_fidelity_mode = st.checkbox(
+                        "Publication fidelity mode (strict chart/text/citation QA before download)",
+                        value=False,
+                        key="publication_fidelity_mode",
+                    )
+                    if publication_fidelity_mode:
+                        expected_citation = st.text_input(
+                            "Expected citation text (optional)",
+                            value="",
+                            key="expected_citation_text",
+                            placeholder="e.g. JACC: Heart Failure. 2026;14(2):102686. doi:10.1016/j.jchf.2025.102686",
+                        )
+                        terms_raw = st.text_input(
+                            "Preferred terminology (comma-separated)",
+                            value="Prediabetes,myocardial infarction",
+                            key="preferred_terms_text",
+                        )
+                        preferred_terms = [x.strip() for x in terms_raw.split(",") if x.strip()]
+
+            if experience_mode == "advanced":
+                phi_ok = st.checkbox(
+                    "I confirm this content does NOT contain protected health information (PHI).",
+                    value=False,
+                    key="phi_confirm",
+                )
+
+        with col_doc:
+            st.markdown("### 📄 Documents (PDF, DOCX, TXT)")
+            st.caption(
+                f"Max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per file. These documents provide context and knowledge "
+                "for the infographic — the content will be extracted, cleaned, and included as source material in the generation prompt."
             )
-            terms_raw = st.text_input(
-                "Preferred terminology (comma-separated)",
-                value="Prediabetes,myocardial infarction",
-                key="preferred_terms_text",
+            uploaded_files = st.file_uploader(
+                "Upload files",
+                type=["pdf", "docx", "txt"],
+                accept_multiple_files=True,
+                key="docs_uploader",
+                help="Upload source documents (papers, articles, reports) to provide context and facts for the infographic. Text will be extracted and used as knowledge in the prompt.",
             )
-            preferred_terms = [x.strip() for x in terms_raw.split(",") if x.strip()]
-
-        phi_ok = st.checkbox(
-            "I confirm this content does NOT contain protected health information (PHI).",
-            value=False,
-            key="phi_confirm",
-        )
-
-    with col_doc:
-        st.markdown("### 📄 Documents (PDF, DOCX, TXT)")
-        st.caption(
-            f"Max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per file. These documents provide context and knowledge "
-            "for the infographic — the content will be extracted, cleaned, and included as source material in the generation prompt."
-        )
-        uploaded_files = st.file_uploader(
-            "Upload files",
-            type=["pdf", "docx", "txt"],
-            accept_multiple_files=True,
-            key="docs_uploader",
-            help="Upload source documents (papers, articles, reports) to provide context and facts for the infographic. Text will be extracted and used as knowledge in the prompt.",
-        )
 
     file_issues: list[str] = []
     files_list = list(uploaded_files) if uploaded_files else []
     if files_list:
-        st.warning("⚠️ Documents are attached. Ensure no PHI before generating.")
+        if experience_mode == "advanced":
+            st.warning("⚠️ Documents are attached. Ensure no PHI before generating.")
         for f in files_list:
             ext = Path(f.name).suffix.lower()
             if ext not in ALLOWED_UPLOAD_EXTENSIONS:
@@ -754,503 +818,499 @@ def main() -> None:
         )
         return cleaned, notes
 
-    # ── Publication chart / data reference (optional, no pre-verify step) ──
-    st.markdown("### 📊 Publication chart reference (optional)")
-    st.caption(
-        "Upload figures or tables from manuscripts, or raw chart data (CSV/XLSX/JSON). "
-        "This is folded into the prompt so generated infographics align with publication values. "
-        "Use **Review charts in output** below after generation to validate what was rendered."
-    )
-    chart_figures = st.file_uploader(
-        "Upload existing chart or figure (PNG, JPG, WEBP)",
-        type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=True,
-        key="chart_figure_uploader",
-        help="Upload chart images from publications. The model will extract values for accuracy.",
-    )
-    chart_data_files = st.file_uploader(
-        "Upload raw data (CSV, XLSX, JSON)",
-        type=["csv", "xlsx", "json"],
-        accept_multiple_files=True,
-        key="chart_data_uploader",
-        help="Upload data files with exact values for charts, bars, or statistics.",
-    )
-    has_chart_inputs = bool(st.session_state.charts or chart_figures or chart_data_files)
+    if experience_mode == "basic":
+        with st.expander("Step 2: Review defaults", expanded=step2_open):
+            st.caption("No tuning needed for first run. These defaults are applied automatically:")
+            st.markdown(
+                "- Style: `UAB Craft Handmade`\n"
+                "- Audience: `Academic / research`\n"
+                "- Layout: `1792x1024` (landscape)\n"
+                "- Quality: `high`"
+            )
+            st.caption("Tip: switch to Advanced anytime to adjust style, compare variants, or add chart references.")
+
+    has_chart_inputs = False
     step_context_ready = bool(sanitized_context.strip() or extracted_preview)
-    step_refs_ready = has_chart_inputs
+    step_refs_ready = False
     step_generate_ready = bool(phi_ok and not inj_rule_ids and not file_issues)
-    st.markdown("### Quick start")
-    q1, q2, q3 = st.columns(3)
-    with q1:
-        st.markdown(
-            (
-                "✅ **Step 1: Add topic context**\n\n"
-                "Describe the topic and/or upload source docs."
-            )
-            if step_context_ready
-            else "⬜ **Step 1: Add topic context**\n\nAdd context text or upload at least one source document."
-        )
-    with q2:
-        st.markdown(
-            (
-                "✅ **Step 2: Add chart references (optional)**\n\n"
-                "You have at least one uploaded or manual reference entry."
-            )
-            if step_refs_ready
-            else "⬜ **Step 2: Add chart references (optional)**\n\nSkip if not needed, or add a chart/file/manual row."
-        )
-    with q3:
-        st.markdown(
-            (
-                "✅ **Step 3: Ready to generate**\n\n"
-                "Safety checks are currently passing."
-            )
-            if step_generate_ready
-            else "⬜ **Step 3: Ready to generate**\n\nConfirm PHI checkbox and clear any warnings first."
-        )
-    chart_context_snippet = st.text_area(
-        "Optional: paste extra source text to help extraction",
-        height=80,
-        key="chart_context_snippet",
-        help="Shown to the vision model when extracting numbers from figure uploads.",
-    )
-    snippet_txt = chart_context_snippet.strip()
-    cross_text = (snippet_txt + "\n" + combined_docs).strip()
 
-    st.checkbox(
-        "Cross-check chart numbers vs uploaded document text (may flag rounding differences or missing table values)",
-        value=False,
-        key="chart_cross_check_documents",
-    )
-    _cc = st.session_state.get("chart_cross_check_documents", False)
-
-    fig_sigs: set[tuple[str, int]] = set(st.session_state.processed_chart_figure_sigs)
-    if chart_figures:
-        for f in chart_figures:
-            raw = f.getvalue()
-            nbytes = len(raw)
-            if nbytes > MAX_CHART_UPLOAD_BYTES:
-                st.error(f"`{f.name}` exceeds max upload size.")
-                continue
-            sig = (f.name, nbytes)
-            if sig in fig_sigs:
-                continue
-            fig_sigs.add(sig)
-            ext = Path(f.name).suffix.lower()
-            mime_map = {
-                ".png": "image/png",
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".webp": "image/webp",
-            }
-            st.session_state.charts.append(
-                {
-                    "chart_id": new_chart_id(),
-                    "chart_type": "unknown",
-                    "title": Path(f.name).stem,
-                    "axis_labels": {},
-                    "axis_units": {},
-                    "category_labels": [],
-                    "legend_labels": [],
-                    "data_series": [],
-                    "footnotes": [],
-                    "source_citation": "",
-                    "verification_status": "active",
-                    "confidence_level": {},
-                    "data_source_types": ["chart_image"],
-                    "visual_reference": True,
-                    "chart_mode": "exact",
-                    "conflicts": [],
-                    "placeholder_text": "",
-                    "extraction_warnings": [],
-                    "source_file": f.name,
-                    "source_location": "",
-                    "low_confidence_fields": [],
-                    "_mime": mime_map.get(ext, "image/png"),
-                    "_bytes_b64": base64.b64encode(raw).decode("ascii"),
-                }
-            )
-    st.session_state.processed_chart_figure_sigs = fig_sigs
-
-    data_sigs: set[tuple[str, int]] = set(st.session_state.processed_data_file_sigs)
-    if chart_data_files:
-        for f in chart_data_files:
-            raw = f.getvalue()
-            nbytes = len(raw)
-            if nbytes > MAX_CHART_UPLOAD_BYTES:
-                st.error(f"`{f.name}` exceeds max upload size.")
-                continue
-            sig = (f.name, nbytes)
-            if sig in data_sigs:
-                continue
-            data_sigs.add(sig)
-            ext = Path(f.name).suffix.lower()
-            try:
-                if ext == ".csv":
-                    series = parse_csv_to_data_series(raw)
-                elif ext == ".json":
-                    series = parse_json_data_file(raw)
-                elif ext == ".xlsx":
-                    series = parse_xlsx_to_data_series(raw)
-                    if not series:
-                        st.warning("XLSX parse failed — install openpyxl or use CSV/JSON.")
-                else:
-                    series = []
-            except Exception as ex:
-                st.error(f"Could not parse `{f.name}`: {ex}")
-                series = []
-            dtype = ext.strip(".") or "file"
-            st.session_state.charts.append(
-                {
-                    "chart_id": new_chart_id(),
-                    "chart_type": "bar",
-                    "title": Path(f.name).stem,
-                    "axis_labels": {},
-                    "axis_units": {},
-                    "category_labels": [],
-                    "legend_labels": [],
-                    "data_series": series,
-                    "footnotes": [],
-                    "source_citation": "",
-                    "verification_status": "active",
-                    "confidence_level": {},
-                    "data_source_types": [dtype],
-                    "visual_reference": False,
-                    "chart_mode": "exact",
-                    "conflicts": [],
-                    "placeholder_text": "",
-                    "extraction_warnings": [],
-                    "source_file": f.name,
-                    "source_location": "",
-                    "low_confidence_fields": [],
-                }
-            )
-            c_last = st.session_state.charts[-1]
-            refresh_chart_reference_hints(c_last, cross_text, _cc)
-    st.session_state.processed_data_file_sigs = data_sigs
-
-    has_chart_inputs = bool(st.session_state.charts or chart_figures or chart_data_files)
-    step_context_ready = bool(sanitized_context.strip() or extracted_preview)
-    step_refs_ready = has_chart_inputs
-    step_generate_ready = bool(phi_ok and not inj_rule_ids and not file_issues)
-    st.markdown("### Quick start")
-    q1, q2, q3 = st.columns(3)
-    with q1:
-        st.markdown(
-            (
-                "✅ **Step 1: Add topic context**\n\n"
-                "Describe the topic and/or upload source docs."
-            )
-            if step_context_ready
-            else "⬜ **Step 1: Add topic context**\n\nAdd context text or upload at least one source document."
-        )
-    with q2:
-        st.markdown(
-            (
-                "✅ **Step 2: Add chart references (optional)**\n\n"
-                "You have at least one uploaded or manual reference entry."
-            )
-            if step_refs_ready
-            else "⬜ **Step 2: Add chart references (optional)**\n\nSkip if not needed, or add a chart/file/manual row."
-        )
-    with q3:
-        st.markdown(
-            (
-                "✅ **Step 3: Ready to generate**\n\n"
-                "Safety checks are currently passing."
-            )
-            if step_generate_ready
-            else "⬜ **Step 3: Ready to generate**\n\nConfirm PHI checkbox and clear any warnings first."
-        )
-
-    st.markdown("**Optional: add data without uploading a file**")
-    st.caption(
-        "Use these when your numbers live elsewhere (another document or tab) or you want to reserve "
-        "space before you paste values. Uploaded figures and data files stay above; these buttons add "
-        "extra reference rows below."
-    )
-    c1p, c2p, c3p = st.columns(3)
-    with c1p:
+    if experience_mode == "advanced":
+        # ── Publication chart / data reference (optional, no pre-verify step) ──
+        st.markdown("### 📊 Publication chart reference (optional)")
         st.caption(
-            "**Manual chart row** — Adds an empty table you fill in: groups, values, units, and notes. "
-            "Best when you are typing or pasting real numbers (for example from a paper or slide you have open)."
+            "Upload figures or tables from manuscripts, or raw chart data (CSV/XLSX/JSON). "
+            "This is folded into the prompt so generated infographics align with publication values. "
+            "Use **Review charts in output** below after generation to validate what was rendered."
         )
-        if st.button(
-            "➕ Add manual chart row (empty)",
-            key="btn_add_manual_chart",
-            help="Creates a new reference with a data grid in the expander below. No file upload required.",
-        ):
-            st.session_state.charts.append(
-                {
-                    "chart_id": new_chart_id(),
-                    "chart_type": "manual",
-                    "title": "Manual entry",
-                    "axis_labels": {},
-                    "axis_units": {},
-                    "category_labels": [],
-                    "legend_labels": [],
-                    "data_series": [
-                        {"group": "", "value": "", "label": "", "unit": ""},
-                    ],
-                    "footnotes": [],
-                    "source_citation": "",
-                    "verification_status": "active",
-                    "confidence_level": {},
-                    "data_source_types": ["manual"],
-                    "visual_reference": False,
-                    "chart_mode": "exact",
-                    "conflicts": [],
-                    "placeholder_text": "",
-                    "extraction_warnings": [],
-                    "source_file": "",
-                    "source_location": "",
-                    "low_confidence_fields": [],
+        chart_figures = st.file_uploader(
+            "Upload existing chart or figure (PNG, JPG, WEBP)",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="chart_figure_uploader",
+            help="Upload chart images from publications. The model will extract values for accuracy.",
+        )
+        chart_data_files = st.file_uploader(
+            "Upload raw data (CSV, XLSX, JSON)",
+            type=["csv", "xlsx", "json"],
+            accept_multiple_files=True,
+            key="chart_data_uploader",
+            help="Upload data files with exact values for charts, bars, or statistics.",
+        )
+        has_chart_inputs = bool(st.session_state.charts or chart_figures or chart_data_files)
+        step_context_ready = bool(sanitized_context.strip() or extracted_preview)
+        step_refs_ready = has_chart_inputs
+        step_generate_ready = bool(phi_ok and not inj_rule_ids and not file_issues)
+        chart_context_snippet = st.text_area(
+            "Optional: paste extra source text to help extraction",
+            height=80,
+            key="chart_context_snippet",
+            help="Shown to the vision model when extracting numbers from figure uploads.",
+        )
+        snippet_txt = chart_context_snippet.strip()
+        cross_text = (snippet_txt + "\n" + combined_docs).strip()
+
+        st.checkbox(
+            "Cross-check chart numbers vs uploaded document text (may flag rounding differences or missing table values)",
+            value=False,
+            key="chart_cross_check_documents",
+        )
+        _cc = st.session_state.get("chart_cross_check_documents", False)
+
+        fig_sigs: set[tuple[str, int]] = set(st.session_state.processed_chart_figure_sigs)
+        if chart_figures:
+            for f in chart_figures:
+                raw = f.getvalue()
+                nbytes = len(raw)
+                if nbytes > MAX_CHART_UPLOAD_BYTES:
+                    st.error(f"`{f.name}` exceeds max upload size.")
+                    continue
+                sig = (f.name, nbytes)
+                if sig in fig_sigs:
+                    continue
+                fig_sigs.add(sig)
+                ext = Path(f.name).suffix.lower()
+                mime_map = {
+                    ".png": "image/png",
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".webp": "image/webp",
                 }
-            )
-            refresh_chart_reference_hints(st.session_state.charts[-1], cross_text, _cc)
-    with c2p:
-        st.caption(
-            "**Placeholder chart** — No numeric grid. Adds a labeled box whose text is sent to the model so "
-            "the infographic can show “values to follow” or similar without inventing numbers."
-        )
-        if st.button(
-            "➕ Add placeholder chart",
-            key="btn_add_placeholder_chart",
-            help="Adds a placeholder entry; edit the wording in its expander. Use when values are not finalized.",
-        ):
-            st.session_state.charts.append(
-                {
-                    "chart_id": new_chart_id(),
-                    "chart_type": "placeholder",
-                    "title": "Approved placeholder",
-                    "axis_labels": {},
-                    "axis_units": {},
-                    "category_labels": [],
-                    "legend_labels": [],
-                    "data_series": [],
-                    "footnotes": [],
-                    "source_citation": "",
-                    "verification_status": "active",
-                    "confidence_level": {},
-                    "data_source_types": ["manual"],
-                    "visual_reference": False,
-                    "chart_mode": "exact",
-                    "conflicts": [],
-                    "placeholder_text": "Exact values to be inserted from [source figure/table]",
-                    "extraction_warnings": [],
-                    "source_file": "",
-                    "source_location": "",
-                    "low_confidence_fields": [],
-                }
-            )
-    with c3p:
-        st.caption(
-            "**Clear all charts** — Removes every reference in this list (uploads, manual rows, and placeholders) "
-            "for this session."
-        )
-        if st.session_state.charts and st.button(
-            "🗑️ Clear all charts",
-            key="btn_clear_charts",
-            help="Deletes all chart references. Re-upload or re-add anything you still need.",
-        ):
-            st.session_state.charts = []
-            st.session_state.processed_chart_figure_sigs = set()
-            st.session_state.processed_data_file_sigs = set()
-            st.rerun()
+                st.session_state.charts.append(
+                    {
+                        "chart_id": new_chart_id(),
+                        "chart_type": "unknown",
+                        "title": Path(f.name).stem,
+                        "axis_labels": {},
+                        "axis_units": {},
+                        "category_labels": [],
+                        "legend_labels": [],
+                        "data_series": [],
+                        "footnotes": [],
+                        "source_citation": "",
+                        "verification_status": "active",
+                        "confidence_level": {},
+                        "data_source_types": ["chart_image"],
+                        "visual_reference": True,
+                        "chart_mode": "exact",
+                        "conflicts": [],
+                        "placeholder_text": "",
+                        "extraction_warnings": [],
+                        "source_file": f.name,
+                        "source_location": "",
+                        "low_confidence_fields": [],
+                        "_mime": mime_map.get(ext, "image/png"),
+                        "_bytes_b64": base64.b64encode(raw).decode("ascii"),
+                    }
+                )
+        st.session_state.processed_chart_figure_sigs = fig_sigs
 
-    st.markdown("#### Reference entries")
-
-    _flash_n = st.session_state.pop("_extract_all_ok", None)
-    if _flash_n:
-        st.success(f"Vision extraction completed for {_flash_n} figure(s).")
-
-    pending_fig = [
-        c
-        for c in st.session_state.charts
-        if chart_figure_pending_extraction(c)
-    ]
-    if pending_fig:
-        st.warning(
-            f"**{len(pending_fig)} uploaded figure(s) need vision extraction** "
-            "before numeric values are included in the prompt (expanders below are opened for those)."
-        )
-        ec1, ec2 = st.columns([2, 1])
-        with ec1:
-            if st.button(
-                "🔍 Run vision extraction on all pending figures",
-                type="primary",
-                use_container_width=True,
-                key="btn_extract_all_pending_figures",
-            ):
-                ok_e, err_e, client_e, _im, _cm = get_credentials()
-                if not ok_e or client_e is None:
-                    st.error(err_e or "Configure API keys.")
-                else:
-                    errs: list[str] = []
-                    vm = get_vision_model_name()
-                    with st.spinner(f"Running vision on {len(pending_fig)} figure(s)…"):
-                        for c in pending_fig:
-                            try:
-                                run_chart_figure_vision_extract(
-                                    c,
-                                    client_e,
-                                    cross_text,
-                                    snippet_txt,
-                                    vm,
-                                    _cc,
-                                )
-                                st.session_state.chart_extraction_nonce += 1
-                            except Exception as ex:
-                                ttl = str(c.get("title") or c.get("chart_id") or "untitled")
-                                errs.append(f"{ttl}: {user_friendly_error(ex)}")
-                    if errs:
-                        st.error("Some extractions failed:\n\n" + "\n".join(errs))
+        data_sigs: set[tuple[str, int]] = set(st.session_state.processed_data_file_sigs)
+        if chart_data_files:
+            for f in chart_data_files:
+                raw = f.getvalue()
+                nbytes = len(raw)
+                if nbytes > MAX_CHART_UPLOAD_BYTES:
+                    st.error(f"`{f.name}` exceeds max upload size.")
+                    continue
+                sig = (f.name, nbytes)
+                if sig in data_sigs:
+                    continue
+                data_sigs.add(sig)
+                ext = Path(f.name).suffix.lower()
+                try:
+                    if ext == ".csv":
+                        series = parse_csv_to_data_series(raw)
+                    elif ext == ".json":
+                        series = parse_json_data_file(raw)
+                    elif ext == ".xlsx":
+                        series = parse_xlsx_to_data_series(raw)
+                        if not series:
+                            st.warning("XLSX parse failed — install openpyxl or use CSV/JSON.")
                     else:
-                        st.session_state["_extract_all_ok"] = len(pending_fig)
-                    st.rerun()
-        with ec2:
-            st.caption("One vision API call per figure.")
+                        series = []
+                except Exception as ex:
+                    st.error(f"Could not parse `{f.name}`: {ex}")
+                    series = []
+                dtype = ext.strip(".") or "file"
+                st.session_state.charts.append(
+                    {
+                        "chart_id": new_chart_id(),
+                        "chart_type": "bar",
+                        "title": Path(f.name).stem,
+                        "axis_labels": {},
+                        "axis_units": {},
+                        "category_labels": [],
+                        "legend_labels": [],
+                        "data_series": series,
+                        "footnotes": [],
+                        "source_citation": "",
+                        "verification_status": "active",
+                        "confidence_level": {},
+                        "data_source_types": [dtype],
+                        "visual_reference": False,
+                        "chart_mode": "exact",
+                        "conflicts": [],
+                        "placeholder_text": "",
+                        "extraction_warnings": [],
+                        "source_file": f.name,
+                        "source_location": "",
+                        "low_confidence_fields": [],
+                    }
+                )
+                c_last = st.session_state.charts[-1]
+                refresh_chart_reference_hints(c_last, cross_text, _cc)
+        st.session_state.processed_data_file_sigs = data_sigs
 
-    if not st.session_state.charts:
-        st.markdown(
-            "<span style='color: #666'>No chart references yet. Upload chart images or data files above, or use the buttons below to add manual entries.</span>",
-            unsafe_allow_html=True,
+        has_chart_inputs = bool(st.session_state.charts or chart_figures or chart_data_files)
+        step_context_ready = bool(sanitized_context.strip() or extracted_preview)
+        step_refs_ready = has_chart_inputs
+        step_generate_ready = bool(phi_ok and not inj_rule_ids and not file_issues)
+        st.markdown("### Quick start")
+        q1, q2, q3 = st.columns(3)
+        with q1:
+            st.markdown(
+                (
+                    "✅ **Step 1: Add topic context**\n\n"
+                    "Describe the topic and/or upload source docs."
+                )
+                if step_context_ready
+                else "⬜ **Step 1: Add topic context**\n\nAdd context text or upload at least one source document."
+            )
+        with q2:
+            st.markdown(
+                (
+                    "✅ **Step 2: Add chart references (optional)**\n\n"
+                    "You have at least one uploaded or manual reference entry."
+                )
+                if step_refs_ready
+                else "⬜ **Step 2: Add chart references (optional)**\n\nSkip if not needed, or add a chart/file/manual row."
+            )
+        with q3:
+            st.markdown(
+                (
+                    "✅ **Step 3: Ready to generate**\n\n"
+                    "Safety checks are currently passing."
+                )
+                if step_generate_ready
+                else "⬜ **Step 3: Ready to generate**\n\nConfirm PHI checkbox and clear any warnings first."
+            )
+
+        st.markdown("**Optional: add data without uploading a file**")
+        st.caption(
+            "Use these when your numbers live elsewhere (another document or tab) or you want to reserve "
+            "space before you paste values. Uploaded figures and data files stay above; these buttons add "
+            "extra reference rows below."
         )
-
-    for idx, chart in enumerate(list(st.session_state.charts)):
-        cid = chart.get("chart_id", f"idx_{idx}")
-        removed = chart.get("verification_status") == "removed"
-        badge = "removed from prompt" if removed else "included in prompt"
-        pending_px = chart_figure_pending_extraction(chart)
-        ex_tag = " — needs vision extraction" if (pending_px and not removed) else ""
-        with st.expander(
-            f"Reference {idx + 1}: {chart.get('title') or cid} — {badge}{ex_tag}",
-            expanded=(pending_px and not removed),
-        ):
-            if removed:
-                st.caption("Excluded from the generation prompt.")
-                if st.button("Include in prompt again", key=f"restore_{cid}"):
-                    chart["verification_status"] = "active"
-                    st.rerun()
-            else:
-                t1, t2 = st.columns(2)
-                with t1:
-                    chart["title"] = st.text_input(
-                        "Title", value=chart.get("title", ""), key=f"tit_{cid}"
-                    )
-                    chart["chart_type"] = st.text_input(
-                        "Chart type", value=chart.get("chart_type", ""), key=f"ct_{cid}"
-                    )
-                with t2:
-                    chart["chart_mode"] = st.selectbox(
-                        "How strictly should this chart be followed?",
-                        options=list(CHART_MODES),
-                        format_func=lambda m: {
-                            "exact": "Exact numbers (recommended)",
-                            "style_transform": "Restyle visual only (keep all data exact)",
-                            "reference_only": "Reference only (layout guidance, non-exact)",
-                        }[m],
-                        index=list(CHART_MODES).index(chart.get("chart_mode", "exact"))
-                        if chart.get("chart_mode") in CHART_MODES
-                        else 0,
-                        key=f"mode_{cid}",
-                        help=(
-                            "Choose Exact for publication values. Use Restyle visual only when you want a "
-                            "different look but identical numbers. Use Reference only if exact data matching "
-                            "is not required for this entry."
-                        ),
-                    )
-                chart["source_citation"] = st.text_input(
-                    "Source citation",
-                    value=chart.get("source_citation", ""),
-                    key=f"src_{cid}",
-                    placeholder="e.g. Journal Name. 2026;14(2):123-130. doi:10.xxxx/xxxx",
+        c1p, c2p, c3p = st.columns(3)
+        with c1p:
+            st.caption(
+                "**Manual chart row** — Adds an empty table you fill in: groups, values, units, and notes. "
+                "Best when you are typing or pasting real numbers (for example from a paper or slide you have open)."
+            )
+            if st.button(
+                "➕ Add manual chart row (empty)",
+                key="btn_add_manual_chart",
+                help="Creates a new reference with a data grid in the expander below. No file upload required.",
+            ):
+                st.session_state.charts.append(
+                    {
+                        "chart_id": new_chart_id(),
+                        "chart_type": "manual",
+                        "title": "Manual entry",
+                        "axis_labels": {},
+                        "axis_units": {},
+                        "category_labels": [],
+                        "legend_labels": [],
+                        "data_series": [
+                            {"group": "", "value": "", "label": "", "unit": ""},
+                        ],
+                        "footnotes": [],
+                        "source_citation": "",
+                        "verification_status": "active",
+                        "confidence_level": {},
+                        "data_source_types": ["manual"],
+                        "visual_reference": False,
+                        "chart_mode": "exact",
+                        "conflicts": [],
+                        "placeholder_text": "",
+                        "extraction_warnings": [],
+                        "source_file": "",
+                        "source_location": "",
+                        "low_confidence_fields": [],
+                    }
                 )
-                chart["source_location"] = st.text_input(
-                    "Source location (optional)",
-                    value=chart.get("source_location", ""),
-                    key=f"loc_{cid}",
-                    placeholder="e.g. Figure 2B, Table 1, Supplementary eFigure 3",
+                refresh_chart_reference_hints(st.session_state.charts[-1], cross_text, _cc)
+        with c2p:
+            st.caption(
+                "**Placeholder chart** — No numeric grid. Adds a labeled box whose text is sent to the model so "
+                "the infographic can show “values to follow” or similar without inventing numbers."
+            )
+            if st.button(
+                "➕ Add placeholder chart",
+                key="btn_add_placeholder_chart",
+                help="Adds a placeholder entry; edit the wording in its expander. Use when values are not finalized.",
+            ):
+                st.session_state.charts.append(
+                    {
+                        "chart_id": new_chart_id(),
+                        "chart_type": "placeholder",
+                        "title": "Approved placeholder",
+                        "axis_labels": {},
+                        "axis_units": {},
+                        "category_labels": [],
+                        "legend_labels": [],
+                        "data_series": [],
+                        "footnotes": [],
+                        "source_citation": "",
+                        "verification_status": "active",
+                        "confidence_level": {},
+                        "data_source_types": ["manual"],
+                        "visual_reference": False,
+                        "chart_mode": "exact",
+                        "conflicts": [],
+                        "placeholder_text": "Exact values to be inserted from [source figure/table]",
+                        "extraction_warnings": [],
+                        "source_file": "",
+                        "source_location": "",
+                        "low_confidence_fields": [],
+                    }
                 )
+        with c3p:
+            st.caption(
+                "**Clear all charts** — Removes every reference in this list (uploads, manual rows, and placeholders) "
+                "for this session."
+            )
+            if st.session_state.charts and st.button(
+                "🗑️ Clear all charts",
+                key="btn_clear_charts",
+                help="Deletes all chart references. Re-upload or re-add anything you still need.",
+            ):
+                st.session_state.charts = []
+                st.session_state.processed_chart_figure_sigs = set()
+                st.session_state.processed_data_file_sigs = set()
+                st.rerun()
 
-                ds_default = chart.get("data_series") or [
-                    {"group": "", "value": "", "label": "", "unit": ""}
-                ]
-                edited = st.data_editor(
-                    pd.DataFrame(ds_default),
-                    num_rows="dynamic",
-                    key=f"de_{cid}",
+        st.markdown("#### Reference entries")
+
+        _flash_n = st.session_state.pop("_extract_all_ok", None)
+        if _flash_n:
+            st.success(f"Vision extraction completed for {_flash_n} figure(s).")
+
+        pending_fig = [
+            c
+            for c in st.session_state.charts
+            if chart_figure_pending_extraction(c)
+        ]
+        if pending_fig:
+            st.warning(
+                f"**{len(pending_fig)} uploaded figure(s) need vision extraction** "
+                "before numeric values are included in the prompt (expanders below are opened for those)."
+            )
+            ec1, ec2 = st.columns([2, 1])
+            with ec1:
+                if st.button(
+                    "🔍 Run vision extraction on all pending figures",
+                    type="primary",
                     use_container_width=True,
-                )
-                if edited is not None and not edited.empty:
-                    chart["data_series"] = edited.to_dict(orient="records")
-
-                foot = "\n".join(chart.get("footnotes") or [])
-                nfoot = st.text_area(
-                    "Footnotes (one per line)", value=foot, height=68, key=f"ft_{cid}"
-                )
-                chart["footnotes"] = [ln for ln in nfoot.splitlines() if ln.strip()]
-
-                if chart.get("_bytes_b64"):
-                    st.caption(
-                        "Publication figure — run vision extraction to pull numbers into the table, "
-                        "or use the primary “Run vision extraction on all pending figures” button above."
-                    )
-                    if st.button("Run vision extraction (this figure only)", key=f"ex_{cid}"):
-                        ok_e, err_e, client_e, _im, _cm = get_credentials()
-                        if not ok_e or client_e is None:
-                            st.error(err_e or "API not configured.")
+                    key="btn_extract_all_pending_figures",
+                ):
+                    ok_e, err_e, client_e, _im, _cm = get_credentials()
+                    if not ok_e or client_e is None:
+                        st.error(err_e or "Configure API keys.")
+                    else:
+                        errs: list[str] = []
+                        vm = get_vision_model_name()
+                        with st.spinner(f"Running vision on {len(pending_fig)} figure(s)…"):
+                            for c in pending_fig:
+                                try:
+                                    run_chart_figure_vision_extract(
+                                        c,
+                                        client_e,
+                                        cross_text,
+                                        snippet_txt,
+                                        vm,
+                                        _cc,
+                                    )
+                                    st.session_state.chart_extraction_nonce += 1
+                                except Exception as ex:
+                                    ttl = str(c.get("title") or c.get("chart_id") or "untitled")
+                                    errs.append(f"{ttl}: {user_friendly_error(ex)}")
+                        if errs:
+                            st.error("Some extractions failed:\n\n" + "\n".join(errs))
                         else:
-                            try:
-                                run_chart_figure_vision_extract(
-                                    chart,
-                                    client_e,
-                                    cross_text,
-                                    snippet_txt,
-                                    get_vision_model_name(),
-                                    _cc,
-                                )
-                                st.session_state.chart_extraction_nonce += 1
-                                st.success("Extraction complete — values are sent with the next generation.")
-                                st.rerun()
-                            except Exception as ex:
-                                st.error(user_friendly_error(ex))
+                            st.session_state["_extract_all_ok"] = len(pending_fig)
+                        st.rerun()
+            with ec2:
+                st.caption("One vision API call per figure.")
 
-                warns = chart.get("extraction_warnings") or []
-                lowc = chart.get("low_confidence_fields") or []
-                if warns or lowc:
-                    st.warning(
-                        "Extraction notes: "
-                        + "; ".join(warns)
-                        + (" | Fields: " + ", ".join(lowc) if lowc else "")
+        if not st.session_state.charts:
+            st.markdown(
+                "<span style='color: #666'>No chart references yet. Upload chart images or data files above, or use the buttons below to add manual entries.</span>",
+                unsafe_allow_html=True,
+            )
+
+        for idx, chart in enumerate(list(st.session_state.charts)):
+            cid = chart.get("chart_id", f"idx_{idx}")
+            removed = chart.get("verification_status") == "removed"
+            badge = "removed from prompt" if removed else "included in prompt"
+            pending_px = chart_figure_pending_extraction(chart)
+            ex_tag = " — needs vision extraction" if (pending_px and not removed) else ""
+            with st.expander(
+                f"Reference {idx + 1}: {chart.get('title') or cid} — {badge}{ex_tag}",
+                expanded=(pending_px and not removed),
+            ):
+                if removed:
+                    st.caption("Excluded from the generation prompt.")
+                    if st.button("Include in prompt again", key=f"restore_{cid}"):
+                        chart["verification_status"] = "active"
+                        st.rerun()
+                else:
+                    t1, t2 = st.columns(2)
+                    with t1:
+                        chart["title"] = st.text_input(
+                            "Title", value=chart.get("title", ""), key=f"tit_{cid}"
+                        )
+                        chart["chart_type"] = st.text_input(
+                            "Chart type", value=chart.get("chart_type", ""), key=f"ct_{cid}"
+                        )
+                    with t2:
+                        chart["chart_mode"] = st.selectbox(
+                            "How strictly should this chart be followed?",
+                            options=list(CHART_MODES),
+                            format_func=lambda m: {
+                                "exact": "Exact numbers (recommended)",
+                                "style_transform": "Restyle visual only (keep all data exact)",
+                                "reference_only": "Reference only (layout guidance, non-exact)",
+                            }[m],
+                            index=list(CHART_MODES).index(chart.get("chart_mode", "exact"))
+                            if chart.get("chart_mode") in CHART_MODES
+                            else 0,
+                            key=f"mode_{cid}",
+                            help=(
+                                "Choose Exact for publication values. Use Restyle visual only when you want a "
+                                "different look but identical numbers. Use Reference only if exact data matching "
+                                "is not required for this entry."
+                            ),
+                        )
+                    chart["source_citation"] = st.text_input(
+                        "Source citation",
+                        value=chart.get("source_citation", ""),
+                        key=f"src_{cid}",
+                        placeholder="e.g. Journal Name. 2026;14(2):123-130. doi:10.xxxx/xxxx",
+                    )
+                    chart["source_location"] = st.text_input(
+                        "Source location (optional)",
+                        value=chart.get("source_location", ""),
+                        key=f"loc_{cid}",
+                        placeholder="e.g. Figure 2B, Table 1, Supplementary eFigure 3",
                     )
 
-                conf = chart.get("conflicts") or []
-                if conf:
-                    st.info(
-                        "Optional cross-check vs document text (edit the table if you disagree with a flag):"
+                    ds_default = chart.get("data_series") or [
+                        {"group": "", "value": "", "label": "", "unit": ""}
+                    ]
+                    edited = st.data_editor(
+                        pd.DataFrame(ds_default),
+                        num_rows="dynamic",
+                        key=f"de_{cid}",
+                        use_container_width=True,
                     )
-                    for co in conf:
-                        st.markdown(
-                            f"- **{co.get('field')}** — document: `{co.get('document_value')}` vs "
-                            f"reference: `{co.get('chart_image_value')}`"
+                    if edited is not None and not edited.empty:
+                        chart["data_series"] = edited.to_dict(orient="records")
+
+                    foot = "\n".join(chart.get("footnotes") or [])
+                    nfoot = st.text_area(
+                        "Footnotes (one per line)", value=foot, height=68, key=f"ft_{cid}"
+                    )
+                    chart["footnotes"] = [ln for ln in nfoot.splitlines() if ln.strip()]
+
+                    if chart.get("_bytes_b64"):
+                        st.caption(
+                            "Publication figure — run vision extraction to pull numbers into the table, "
+                            "or use the primary “Run vision extraction on all pending figures” button above."
+                        )
+                        if st.button("Run vision extraction (this figure only)", key=f"ex_{cid}"):
+                            ok_e, err_e, client_e, _im, _cm = get_credentials()
+                            if not ok_e or client_e is None:
+                                st.error(err_e or "API not configured.")
+                            else:
+                                try:
+                                    run_chart_figure_vision_extract(
+                                        chart,
+                                        client_e,
+                                        cross_text,
+                                        snippet_txt,
+                                        get_vision_model_name(),
+                                        _cc,
+                                    )
+                                    st.session_state.chart_extraction_nonce += 1
+                                    st.success("Extraction complete — values are sent with the next generation.")
+                                    st.rerun()
+                                except Exception as ex:
+                                    st.error(user_friendly_error(ex))
+
+                    warns = chart.get("extraction_warnings") or []
+                    lowc = chart.get("low_confidence_fields") or []
+                    if warns or lowc:
+                        st.warning(
+                            "Extraction notes: "
+                            + "; ".join(warns)
+                            + (" | Fields: " + ", ".join(lowc) if lowc else "")
                         )
 
-                chart["placeholder_text"] = st.text_input(
-                    "Placeholder label (for TBD values)", value=chart.get("placeholder_text", ""), key=f"pht_{cid}"
-                )
-                a1, a2 = st.columns(2)
-                with a1:
-                    if st.button("Remove from prompt", key=f"rm_{cid}", type="secondary"):
-                        chart["verification_status"] = "removed"
-                        st.rerun()
-                with a2:
-                    if st.button("Refresh cross-check hints", key=f"rc_{cid}", type="secondary"):
-                        refresh_chart_reference_hints(chart, cross_text, _cc)
-                        st.rerun()
+                    conf = chart.get("conflicts") or []
+                    if conf:
+                        st.info(
+                            "Optional cross-check vs document text (edit the table if you disagree with a flag):"
+                        )
+                        for co in conf:
+                            st.markdown(
+                                f"- **{co.get('field')}** — document: `{co.get('document_value')}` vs "
+                                f"reference: `{co.get('chart_image_value')}`"
+                            )
 
-    chart_reference_block = format_chart_reference_for_prompt(st.session_state.charts)
-    fidelity_preflight = publication_reference_preflight_issues(st.session_state.charts)
+                    chart["placeholder_text"] = st.text_input(
+                        "Placeholder label (for TBD values)", value=chart.get("placeholder_text", ""), key=f"pht_{cid}"
+                    )
+                    a1, a2 = st.columns(2)
+                    with a1:
+                        if st.button("Remove from prompt", key=f"rm_{cid}", type="secondary"):
+                            chart["verification_status"] = "removed"
+                            st.rerun()
+                    with a2:
+                        if st.button("Refresh cross-check hints", key=f"rc_{cid}", type="secondary"):
+                            refresh_chart_reference_hints(chart, cross_text, _cc)
+                            st.rerun()
+
+    else:
+        chart_reference_block = ""
+        fidelity_preflight = []
+        chart_context_snippet = ""
+        snippet_txt = ""
+        cross_text = combined_docs.strip()
+        st.caption("Basic mode uses document-only generation. Use Advanced for chart/data controls.")
+    if experience_mode == "advanced":
+        chart_reference_block = format_chart_reference_for_prompt(st.session_state.charts)
+        fidelity_preflight = publication_reference_preflight_issues(st.session_state.charts)
     if publication_fidelity_mode and fidelity_preflight:
         st.error("Publication fidelity preflight checks failed:")
         for item in fidelity_preflight:
@@ -1278,72 +1338,73 @@ def main() -> None:
         inferred_profile=inferred_profile_preview,
     )
 
-    with st.expander("View full prompt (audited locally only — never logged server-side)", expanded=False):
-        st.caption(
-            "This preview uses **regex cleanup** on uploaded documents. On **Generate**, the app runs "
-            "**LLM document cleanup first**, then builds the prompt — so live prompts can differ slightly "
-            "from this preview when files are attached."
-        )
-        if provider == "azure":
-            max_prompt_len = AZURE_IMAGE_PROMPT_MAX_CHARS - AZURE_IMAGE_PROMPT_SAFETY_MARGIN
-            optimized_preview = optimize_azure_image_prompt(tentative_prompt, max_prompt_len)
+    if experience_mode == "advanced":
+        with st.expander("View full prompt (audited locally only — never logged server-side)", expanded=False):
             st.caption(
-                f"Azure effective prompt preview (after optimization): "
-                f"{len(optimized_preview)} chars (limit {max_prompt_len})."
+                "This preview uses **regex cleanup** on uploaded documents. On **Generate**, the app runs "
+                "**LLM document cleanup first**, then builds the prompt — so live prompts can differ slightly "
+                "from this preview when files are attached."
             )
-            st.text_area(
-                "Effective prompt sent to Azure image endpoint",
-                value=optimized_preview,
-                height=420,
-                disabled=True,
-                key="effective_azure_prompt_preview",
-            )
-            if optimized_preview != tentative_prompt:
+            if provider == "azure":
+                max_prompt_len = AZURE_IMAGE_PROMPT_MAX_CHARS - AZURE_IMAGE_PROMPT_SAFETY_MARGIN
+                optimized_preview = optimize_azure_image_prompt(tentative_prompt, max_prompt_len)
                 st.caption(
-                    f"Original prompt length before optimization: {len(tentative_prompt)} chars."
+                    f"Azure effective prompt preview (after optimization): "
+                    f"{len(optimized_preview)} chars (limit {max_prompt_len})."
                 )
-        else:
-            st.caption(f"Prompt length: {len(tentative_prompt)} chars.")
-            st.text_area(
-                "Full prompt preview",
-                value=tentative_prompt,
-                height=420,
-                disabled=True,
-                key="full_prompt_preview",
-            )
+                st.text_area(
+                    "Effective prompt sent to Azure image endpoint",
+                    value=optimized_preview,
+                    height=420,
+                    disabled=True,
+                    key="effective_azure_prompt_preview",
+                )
+                if optimized_preview != tentative_prompt:
+                    st.caption(
+                        f"Original prompt length before optimization: {len(tentative_prompt)} chars."
+                    )
+            else:
+                st.caption(f"Prompt length: {len(tentative_prompt)} chars.")
+                st.text_area(
+                    "Full prompt preview",
+                    value=tentative_prompt,
+                    height=420,
+                    disabled=True,
+                    key="full_prompt_preview",
+                )
 
-    with st.expander("Prompt sent to API (last run)", expanded=False):
-        sent_prompt = str(st.session_state.get("last_effective_prompt", "") or "")
-        sent_hash = str(st.session_state.get("last_effective_prompt_sha256", "") or "")
-        if sent_prompt:
-            st.caption(
-                f"Length: {len(sent_prompt)} chars | SHA-256: `{sent_hash}`"
-            )
-            st.text_area(
-                "Exact prompt body sent on last generation call",
-                value=sent_prompt,
-                height=420,
-                disabled=True,
-                key="sent_prompt_preview",
-            )
-        else:
-            st.caption("No generation run yet in this session.")
+        with st.expander("Prompt sent to API (last run)", expanded=False):
+            sent_prompt = str(st.session_state.get("last_effective_prompt", "") or "")
+            sent_hash = str(st.session_state.get("last_effective_prompt_sha256", "") or "")
+            if sent_prompt:
+                st.caption(
+                    f"Length: {len(sent_prompt)} chars | SHA-256: `{sent_hash}`"
+                )
+                st.text_area(
+                    "Exact prompt body sent on last generation call",
+                    value=sent_prompt,
+                    height=420,
+                    disabled=True,
+                    key="sent_prompt_preview",
+                )
+            else:
+                st.caption("No generation run yet in this session.")
 
-    with st.expander("Inferred source profile (last run)", expanded=False):
-        prof = st.session_state.get("last_inferred_profile", {}) or {}
-        if isinstance(prof, dict) and prof:
-            st.caption(
-                "Normalized citation fields and inferred mode used for prompt building."
-            )
-            st.markdown(
-                f"- Citation title: `{str(prof.get('citation_title','') or '[not inferred]')}`\n"
-                f"- Citation journal: `{str(prof.get('citation_journal','') or '[not inferred]')}`\n"
-                f"- Citation year: `{str(prof.get('citation_year','') or '[not inferred]')}`\n"
-                f"- Citation authors: `{str(prof.get('citation_authors_short','') or '[not inferred]')}`\n"
-                f"- Non-numeric mode: `{'ON' if bool(prof.get('non_numeric_mode')) else 'OFF'}`"
-            )
-        else:
-            st.caption("No inferred profile yet. Generate once to inspect inferred fields.")
+        with st.expander("Inferred source profile (last run)", expanded=False):
+            prof = st.session_state.get("last_inferred_profile", {}) or {}
+            if isinstance(prof, dict) and prof:
+                st.caption(
+                    "Normalized citation fields and inferred mode used for prompt building."
+                )
+                st.markdown(
+                    f"- Citation title: `{str(prof.get('citation_title','') or '[not inferred]')}`\n"
+                    f"- Citation journal: `{str(prof.get('citation_journal','') or '[not inferred]')}`\n"
+                    f"- Citation year: `{str(prof.get('citation_year','') or '[not inferred]')}`\n"
+                    f"- Citation authors: `{str(prof.get('citation_authors_short','') or '[not inferred]')}`\n"
+                    f"- Non-numeric mode: `{'ON' if bool(prof.get('non_numeric_mode')) else 'OFF'}`"
+                )
+            else:
+                st.caption("No inferred profile yet. Generate once to inspect inferred fields.")
 
     credential_issue = ""
     if provider == "openai":
@@ -1360,53 +1421,91 @@ def main() -> None:
         if not key_val:
             credential_issue = "Gemini API key is missing."
 
-    readiness_issues: list[str] = []
-    if not step_context_ready:
-        readiness_issues.append("Add topic context text or upload at least one source document.")
-    if not phi_ok:
-        readiness_issues.append("Confirm the PHI checkbox.")
-    if credential_issue:
-        readiness_issues.append(credential_issue)
-    if inj_rule_ids:
-        readiness_issues.append("Resolve possible prompt-injection flags in context/documents.")
-    if file_issues:
-        readiness_issues.append("Fix upload issues (unsupported type or oversized file).")
-    if mode == "compare" and len(compare_style_keys) != 3:
-        readiness_issues.append("Pick exactly 3 styles for comparison mode.")
-    if publication_fidelity_mode and fidelity_preflight:
-        readiness_issues.append("Resolve publication fidelity preflight issues in chart references.")
+    generate_btn = False
+    step3_title = "Step 3: Generate"
+    with st.expander(step3_title, expanded=(experience_mode == "basic" or step3_open)):
+        if experience_mode == "basic":
+            st.markdown(
+                "<div style='border:1px solid #d9e8e2;border-radius:12px;padding:14px;background:#f7fbf9'>"
+                "<div style='font-weight:700;color:#1A5632;margin-bottom:4px'>Ready to generate</div>"
+                "<div style='color:#38655b;font-size:0.92rem'>"
+                "The app will clean your sources and generate a complete first draft infographic."
+                "</div></div>",
+                unsafe_allow_html=True,
+            )
+            phi_ok = st.checkbox(
+                "I confirm this content does NOT contain protected health information (PHI).",
+                value=bool(st.session_state.get("phi_confirm", False)),
+                key="phi_confirm",
+            )
+        else:
+            phi_ok = bool(st.session_state.get("phi_confirm", False))
 
-    st.markdown("### Readiness")
-    if readiness_issues:
-        st.warning("Generation is currently blocked:")
-        for issue in readiness_issues:
-            st.markdown(f"- {issue}")
-    else:
-        st.success("All checks passed. Ready to generate.")
+        readiness_issues: list[str] = []
+        if not step_context_ready:
+            readiness_issues.append("Add topic context text or upload at least one source document.")
+        if not phi_ok:
+            readiness_issues.append("Confirm the PHI checkbox.")
+        if credential_issue:
+            readiness_issues.append(credential_issue)
+        if inj_rule_ids:
+            readiness_issues.append("Resolve possible prompt-injection flags in context/documents.")
+        if file_issues:
+            readiness_issues.append("Fix upload issues (unsupported type or oversized file).")
+        if mode == "compare" and len(compare_style_keys) != 3:
+            readiness_issues.append("Pick exactly 3 styles for comparison mode.")
+        if publication_fidelity_mode and fidelity_preflight:
+            readiness_issues.append("Resolve publication fidelity preflight issues in chart references.")
 
-    gen_disabled = (
-        not phi_ok
-        or bool(credential_issue)
-        or bool(inj_rule_ids)
-        or bool(file_issues)
-        or (mode == "compare" and len(compare_style_keys) != 3)
-        or (publication_fidelity_mode and bool(fidelity_preflight))
-    )
-
-    if mode == "single":
-        generate_btn = st.button(
-            "🎨 Generate infographic",
-            type="primary",
-            use_container_width=True,
-            disabled=gen_disabled,
+        gen_disabled = (
+            not phi_ok
+            or bool(credential_issue)
+            or bool(inj_rule_ids)
+            or bool(file_issues)
+            or (mode == "compare" and len(compare_style_keys) != 3)
+            or (publication_fidelity_mode and bool(fidelity_preflight))
         )
-    else:
-        generate_btn = st.button(
-            "🎨 Generate 3-way comparison",
-            type="primary",
-            use_container_width=True,
-            disabled=gen_disabled,
-        )
+
+        st.markdown("### Readiness")
+        if experience_mode == "basic":
+            sources_ok = bool(step_context_ready) and not bool(file_issues) and not bool(inj_rule_ids)
+            phi_status_ok = bool(phi_ok)
+            api_ok = not bool(credential_issue)
+
+            def _badge(ok: bool) -> str:
+                return "✅" if ok else "⚠️"
+
+            st.markdown(
+                f"{_badge(sources_ok)} **Sources**  \u00a0\u00a0 "
+                f"{_badge(phi_status_ok)} **PHI Confirmed**  \u00a0\u00a0 "
+                f"{_badge(api_ok)} **API Connected**"
+            )
+            if not gen_disabled:
+                st.caption("Ready. Click Generate to create your infographic.")
+            else:
+                st.caption("Complete all checklist items above to enable Generate.")
+        else:
+            if readiness_issues:
+                st.warning("Generation is currently blocked:")
+                for issue in readiness_issues:
+                    st.markdown(f"- {issue}")
+            else:
+                st.success("All checks passed. Ready to generate.")
+
+        if mode == "single":
+            generate_btn = st.button(
+                "🎨 Generate infographic" if experience_mode == "advanced" else "🎨 Generate",
+                type="primary",
+                use_container_width=True,
+                disabled=gen_disabled,
+            )
+        else:
+            generate_btn = st.button(
+                "🎨 Generate 3-way comparison",
+                type="primary",
+                use_container_width=True,
+                disabled=gen_disabled,
+            )
 
     # Allow refinement flow to trigger generation without requiring users to scroll back up.
     if mode == "single" and st.session_state.pop("refine_generate_now", False):
@@ -1828,6 +1927,20 @@ def main() -> None:
             key="dl_single",
             disabled=dl_disabled,
         )
+        latest_scan = st.session_state.get("last_refinements_scan")
+        if isinstance(latest_scan, dict) and latest_scan:
+            if st.button(
+                "✨ Use AI suggestions",
+                key="btn_use_ai_suggestions_primary",
+                type="primary",
+                use_container_width=True,
+                help="Applies the latest refinements scan suggestions and immediately generates a new version.",
+            ):
+                apply_txt = format_refinements_scan_for_notes(latest_scan)
+                st.session_state.refinement_notes = apply_txt
+                st.session_state.refinement_loop_area = apply_txt
+                st.session_state.refine_generate_now = True
+                st.rerun()
         with st.expander("📋 Review charts in the generated image (vision QA)", expanded=True):
             has_ref = bool(str(st.session_state.get("last_chart_reference_block", "") or "").strip())
             st.caption(
