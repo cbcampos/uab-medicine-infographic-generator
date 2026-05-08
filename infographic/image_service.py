@@ -18,7 +18,7 @@ import httpx
 from openai import APITimeoutError, AzureOpenAI, OpenAI
 from PIL import Image
 
-from uab_app.constants import (
+from infographic.constants import (
     BACKOFF_BASE_S,
     GEMINI_IMAGE_MODEL_ALIASES,
     GEMINI_OPENAI_BASE_URL,
@@ -70,7 +70,7 @@ def make_client(
 ) -> OpenAI | AzureOpenAI:
     timeout = float(IMAGE_GEN_TIMEOUT_S)
     if provider == "openai":
-        return OpenAI(api_key=api_key, timeout=timeout)
+        return OpenAI(api_key=api_key, base_url=endpoint, timeout=timeout)
     if provider == "gemini":
         c = OpenAI(
             api_key=api_key,

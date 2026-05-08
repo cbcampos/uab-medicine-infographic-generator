@@ -11,11 +11,11 @@ import re
 
 from openai import AzureOpenAI, OpenAI
 
-from uab_app.constants import (
+from infographic.constants import (
     DOCUMENT_CLEAN_CHUNK_OVERLAP,
     DOCUMENT_CLEAN_MAX_CHUNK_CHARS,
 )
-from uab_app.sanitize import regex_cleanup_fallback, strip_control_chars
+from infographic.sanitize import regex_cleanup_fallback, strip_control_chars
 
 
 @dataclass

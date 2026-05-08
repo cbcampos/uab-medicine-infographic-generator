@@ -1,53 +1,111 @@
-import pandas as pd
-from aiweb_common.file_operations.upload_manager import FastAPIUploadManager
-from fastapi import APIRouter, BackgroundTasks, HTTPException
-from io import StringIO
 import base64
-from app.fastapi_config import TAB1_META
-from app.v01.schemas import FileInRequest, DataFrameResponse
+import logging
+from typing import Any
 
-#TODO add tags
-router = APIRouter(tags=["Tab1"])
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from pydantic import BaseModel, Field
+
+from infographic.parsers import extract_document_text
+from infographic.cleanup import clean_document_text_llm
+from infographic.image_service import (
+    fetch_image_bytes,
+    generate_image,
+    make_client,
+    composite_logo_footer,
+    resolve_logo_path,
+)
+from infographic.prompts import build_infographic_prompt
+from infographic.constants import LITELLM_IMAGE_MODEL
 
 
-def dataframe_to_csv_base64(df: pd.DataFrame) -> str:
-    csv_buffer = StringIO()
-    df.to_csv(csv_buffer, index=False)
-    csv_bytes = csv_buffer.getvalue().encode('utf-8')
-    b64_bytes = base64.b64encode(csv_bytes)
-    return b64_bytes.decode('utf-8')
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["InfographicGeneration"])
 
 
-def get_task_response(
-    request: FileInRequest, background_tasks: BackgroundTasks
-) -> DataFrameResponse:
+class GenerateRequest(BaseModel):
+    file_encoded: str = Field(..., description="Base64-encoded document content")
+    extension: str = Field(..., description="File extension: '.pdf', '.docx', '.txt'")
+    style: str = Field(default="uab-craft-handmade", description="Visual style key")
+    audience: str = Field(default="academic", description="Target audience")
+    user_context: str = Field(default="", description="Optional context/goal")
+    size: str = Field(default="1792x1024", description="Image size")
+    quality: str = Field(default="high", description="Image quality")
+    openai_compatible_endpoint: str = Field(
+        ..., description="OpenAI-compatible endpoint URL"
+    )
+    openai_compatible_model: str = Field(..., description="Model name to use")
+
+
+class GenerateResponse(BaseModel):
+    image_b64: str = Field(..., description="Base64-encoded PNG image")
+    prompt_used: str = Field(..., description="The prompt that was sent to the model")
+
+
+@router.post("/v01/generate")
+async def generate_infographic(
+    background_tasks: BackgroundTasks,
+    request: GenerateRequest,
+    authorization: str = Header(...),
+) -> GenerateResponse:
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header format")
+
+    api_key = authorization[7:]
 
     try:
         extension = request.extension.lower().strip()
         if not extension.startswith("."):
             extension = f".{extension}"
-        upload_manager = FastAPIUploadManager(background_tasks=background_tasks)
-        data = upload_manager.read_and_validate_file(request.file_encoded, extension)
-        if not isinstance(data, pd.DataFrame):
-            raise ValueError("Uploaded file did not result in a valid DataFrame.")
+
+        file_bytes = base64.b64decode(request.file_encoded)
+
+        class FakeFile:
+            def __init__(self, name: str, data: bytes):
+                self.name = name
+                self._data = data
+
+            def getvalue(self) -> bytes:
+                return self._data
+
+        fake_file = FakeFile(f"doc{extension}", file_bytes)
+        extracted_text = extract_document_text(fake_file)
+
+        client = make_client("openai", api_key, request.openai_compatible_endpoint, None)
+
+        result = clean_document_text_llm(
+            client, "openai", request.openai_compatible_model, extracted_text
+        )
+        cleaned_docs = [result.text]
+
+        prompt = build_infographic_prompt(
+            style_id=request.style,
+            user_context=request.user_context,
+            cleaned_document_texts=cleaned_docs,
+            audience_key=request.audience,
+            refinement_notes="",
+            logo_instructions_extra="",
+        )
+
+        image_url_or_data = generate_image(
+            client,
+            "openai",
+            request.openai_compatible_model,
+            prompt,
+            request.size,
+            request.quality,
+        )
+        image_bytes = fetch_image_bytes(image_url_or_data)
+
+        logo_path = resolve_logo_path()
+        if logo_path and image_bytes:
+            image_bytes = composite_logo_footer(image_bytes, logo_path, request.style)
+
+        return GenerateResponse(
+            image_b64=base64.b64encode(image_bytes).decode("utf-8"),
+            prompt_used=prompt,
+        )
+
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error processing file: {e}")
-        
-    response = DataFrameResponse(
-                name="Data",
-                data=dataframe_to_csv_base64(data)
-            )
-    return response
-
-
-# Route paths must NOT include the service prefix (e.g. /app).
-# Traefik StripPrefix handles the prefix — hardcoding it here
-# causes doubled prefixes and 404s behind the reverse proxy.
-@router.post("/v01/tab1", **TAB1_META)
-async def process_file(
-    background_tasks: BackgroundTasks, request: FileInRequest
-) -> DataFrameResponse:
-    #This example task returns a MS Excel document.
-    response = get_task_response(request, background_tasks)
-
-    return response
+        logger.error(f"Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e

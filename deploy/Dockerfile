@@ -21,6 +21,6 @@ WORKDIR /app
 
 COPY . .
 
-EXPOSE 8000
+EXPOSE 8501
 
-CMD ["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["streamlit", "run", "infographic_app.py", "--server.port=8501", "--server.address=0.0.0.0"]

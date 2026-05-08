@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from openai import AzureOpenAI, OpenAI
 
-from uab_app.constants import CHART_CONFLICT_MAX_ITEMS, EXTRACTION_SYSTEM_PROMPT
+from infographic.constants import CHART_CONFLICT_MAX_ITEMS, EXTRACTION_SYSTEM_PROMPT
 
 # Auto-generated doc-vs-chart conflict rows use this marker so toggling
 # cross-check can drop them without losing user-entered conflicts.

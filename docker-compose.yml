@@ -1,0 +1,36 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - BACKEND_HOST=backend
+      - BACKEND_PORT=8000
+    secrets:
+      - azure_proxy_key
+      - azure_proxy_endpoint
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+secrets:
+  azure_proxy_key:
+    file: /mnt/p/Secrets/azure_proxy_key.txt
+  azure_proxy_endpoint:
+    file: /mnt/p/Secrets/azure_proxy_endpoint.txt

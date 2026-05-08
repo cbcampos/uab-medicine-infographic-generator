@@ -1,7 +1,10 @@
+[server]
+port = 8501
+enableCORS = false
+
 [theme]
-base = "light"
-primaryColor = "#1A5632"
-backgroundColor = "#F4F7F9"
-secondaryBackgroundColor = "#EEF5F1"
-textColor = "#143246"
-font = "sans serif"
+primaryColor = "#003865"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+font = "sans-serif"

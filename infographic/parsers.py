@@ -9,7 +9,7 @@ from typing import Any
 import docx
 import PyPDF2
 
-from uab_app.constants import ALLOWED_UPLOAD_EXTENSIONS
+from infographic.constants import ALLOWED_UPLOAD_EXTENSIONS
 
 
 def read_pdf(file: io.BytesIO) -> str:

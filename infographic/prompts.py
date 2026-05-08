@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
-from uab_app.constants import AUDIENCE_GUIDANCE
-from uab_app.styles import STYLES
+from infographic.constants import AUDIENCE_GUIDANCE
+from infographic.styles import STYLES
 
 
 def _compact_ws(text: str) -> str:

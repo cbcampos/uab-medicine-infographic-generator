@@ -31,8 +31,8 @@ try:
 except ImportError:
     pass
 
-from uab_app.audit import audit_log
-from uab_app.charts import (
+from infographic.audit import audit_log
+from infographic.charts import (
     chart_dict_to_dataclass,
     format_chart_reference_for_prompt,
     format_publication_fidelity_qa_markdown,
@@ -47,9 +47,9 @@ from uab_app.charts import (
     run_publication_fidelity_qa,
     run_post_generation_chart_qa,
 )
-from uab_app.cleanup import cache_key_for_raw, clean_document_text_llm
-from uab_app.cleanup import infer_source_profile_llm
-from uab_app.constants import (
+from infographic.cleanup import cache_key_for_raw, clean_document_text_llm
+from infographic.cleanup import infer_source_profile_llm
+from infographic.constants import (
     ALLOWED_UPLOAD_EXTENSIONS,
     CHART_EXTRACTION_CONTEXT_MAX_CHARS,
     CHART_MODES,
@@ -65,7 +65,7 @@ from uab_app.constants import (
     OPENAI_DEFAULT_IMAGE_MODEL,
     OPENAI_DEFAULT_VISION_MODEL,
 )
-from uab_app.image_service import (
+from infographic.image_service import (
     AZURE_IMAGE_PROMPT_MAX_CHARS,
     AZURE_IMAGE_PROMPT_SAFETY_MARGIN,
     build_guided_refinement_notes,
@@ -79,10 +79,10 @@ from uab_app.image_service import (
     run_refinements_scan_vision,
     user_friendly_error,
 )
-from uab_app.parsers import extract_document_text
-from uab_app.prompts import build_infographic_prompt
-from uab_app.sanitize import injection_labels_for_ids, regex_cleanup_fallback, sanitize_input
-from uab_app.styles import STYLES
+from infographic.parsers import extract_document_text
+from infographic.prompts import build_infographic_prompt
+from infographic.sanitize import injection_labels_for_ids, regex_cleanup_fallback, sanitize_input
+from infographic.styles import STYLES
 
 
 def _data_series_has_meaningful_numbers(series: list[dict[str, Any]]) -> bool:

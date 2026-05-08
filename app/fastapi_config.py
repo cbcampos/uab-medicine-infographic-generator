@@ -26,7 +26,10 @@ TAB1_META = {
     "description": (
         "Accepts a CSV or Excel file. The data is parsed and categorized, returning the processed result as a base64-encoded CSV file. "
         "Only files of type CSV ({csv_type}) or Excel ({xlsx_type}) are accepted."
-    ).format(csv_type=CSV_EXPECTED_TYPE, xlsx_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    ).format(
+        csv_type=CSV_EXPECTED_TYPE,
+        xlsx_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
     "response_description": "Returns processed tabular data as a base64-encoded CSV file.",
     "responses": {
         200: {
