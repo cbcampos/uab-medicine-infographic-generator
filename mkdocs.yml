@@ -1,0 +1,30 @@
+# mkdocs.yml
+site_name: infographic
+site_url: https://sites.uab.edu/periop-datascience/
+repo_url: https://github.com/uabperiopai
+nav:
+  - Home: index.md
+  - 'infographic':
+    - Streamlit Interface: 'infographic/sample_handler.md'
+    - User Interface: 'infographic_streamlit_app.md'
+    - Example: 'infographic/utils/utils_example.md'
+  - 'infographic/config':
+    - Config: 'infographic/config/config.md'
+
+  - llm_utils: '!include ./llm_utils/mkdocs.yml'
+
+theme:
+  name: readthedocs
+plugins:
+  - search
+  - monorepo:
+      submodules:
+        - path: llm_utils
+          repo_url: ''
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: ['infographic', 'infographic/config', user_interface, llm_utils]  # search packages in these folders
+watch:
+  - .  # reload docs for any file changes
+use_directory_urls: false

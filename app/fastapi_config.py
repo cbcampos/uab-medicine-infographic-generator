@@ -1,0 +1,64 @@
+import os
+
+CSV_EXPECTED_TYPE = "text/csv"
+
+# ROOT_PATH is set by the Traefik reverse proxy (e.g. /app, /irb).
+# It tells FastAPI the external URL prefix for OpenAPI docs without
+# affecting route matching.  Do NOT hardcode this prefix into route
+# decorators — Traefik StripPrefix removes it before forwarding.
+FORM_API_META = {
+    "root_path": os.environ.get("ROOT_PATH", ""),
+    "title": "infographic",
+    "description": "",
+    "summary": "Brought to you by the Anesthesiology Research, Informatics, and Data Science teams in collaboration with Radiology Imaging Informatics, Clinicians, and Researchers.",
+    "version": "0.0.1",
+    "contact": {
+        "name": "Perioperative Data Science Team",
+        "url": "https://twitter.com/UABAnes_AI",
+        "email": "rmelvin@uabmc.edu",
+    },
+    "license_info": {"name": "gpl-3.0", "url": "https://www.gnu.org/licenses/gpl-3.0.en.html"},
+}
+
+
+TAB1_META = {
+    "summary": "Processes uploaded CSV or Excel file and returns categorized tabular data as a CSV.",
+    "description": (
+        "Accepts a CSV or Excel file. The data is parsed and categorized, returning the processed result as a base64-encoded CSV file. "
+        "Only files of type CSV ({csv_type}) or Excel ({xlsx_type}) are accepted."
+    ).format(csv_type=CSV_EXPECTED_TYPE, xlsx_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    "response_description": "Returns processed tabular data as a base64-encoded CSV file.",
+    "responses": {
+        200: {
+            "content": {
+                CSV_EXPECTED_TYPE: {"schema": {"type": "string", "format": "byte"}},
+            },
+            "description": "Returns a base64 string representing the processed CSV file. The client must decode to obtain the file.",
+        },
+        400: {"description": "Bad request. The file did not contain valid tabular data."},
+        415: {"description": "Unsupported file type. Only CSV and Excel files are accepted."},
+    },
+    "operation_id": "file_upload",
+}
+
+
+TAB2_META = {
+    "summary": "Returns a sample MS Word (Docx) report.",
+    "description": (
+        "Generates and returns a dummy MS Word report as a base64-encoded Docx string. "
+        "This endpoint does not require file input; it provides a static example document."
+    ),
+    "response_description": "Returns a base64-encoded MS Word document.",
+    "responses": {
+        200: {
+            "content": {
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+                    "schema": {"type": "string", "format": "byte"}
+                }
+            },
+            "description": "Returns a base64 string representing a Docx file. The client must decode to obtain the document.",
+        },
+        500: {"description": "Server error while generating report."},
+    },
+    "operation_id": "generate_report",
+}

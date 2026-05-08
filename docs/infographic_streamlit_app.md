@@ -1,0 +1,1 @@
+::: infographic_streamlit_app

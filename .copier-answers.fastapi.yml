@@ -1,0 +1,12 @@
+# Changes here will be overwritten by Copier.
+_src_path: /home/rmelvin/repos/Templates/fastapi_app
+author_email: ccampos@uabmc.edu
+author_name: Chris Campos
+common_template_src: /home/rmelvin/repos/Templates/fastapi_app/../common
+data_dir: data
+data_directory_name: DATASCI
+description: ''
+llm_endpoint: https://proxy-ai-anes-uabmc-awefchfueccrddhf.eastus2-01.azurewebsites.net/v1
+mlflow_tracking_uri: https://
+project_name: infographic
+repository_url: ''
