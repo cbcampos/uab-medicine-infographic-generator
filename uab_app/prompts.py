@@ -269,7 +269,10 @@ def build_infographic_prompt(
 - TOP REGION: Title/headline centered, large, bold — reserve for key message
 - LEFT / CENTER: Primary content area — key points, icons, illustrations, data callouts
 - RIGHT / LOWER: Supporting content, secondary data, evidence summaries
-- BOTTOM: Clean white band for logo placement (bottom-right or bottom-center)
+- BOTTOM FOOTER: Create a full-width white footer band across the entire bottom edge.
+- Put the source/citation text inside the footer on the left.
+- Keep the bottom-right corner of the footer empty for app-side logo compositing.
+- Do not place panels, cards, bullets, illustrations, textures, colored fills, or decorative marks in the footer.
 - Leave generous negative space — do NOT crowd the layout
 - When specific text must appear in the image, write it EXACTLY as it should appear (use ALL CAPS for headings, spell out all technical/medical terms letter by letter)
 
@@ -295,13 +298,11 @@ def build_infographic_prompt(
 - Do NOT redraw, reinterpret, recreate, stylize, distort, watercolor, trace, recolor, crop, stretch, or modify the logo.
 - Do NOT generate any alternate UAB, UAB Medicine, university, hospital, school, or department logo.
 - Do NOT invent seals, icons, shield marks, taglines, or substitute brand marks.
-- The approved logo must appear exactly as provided, with correct proportions and colors.
-- Place the logo in a clean white footer or corner area with adequate clear space.
-- Keep the logo separate from watercolor effects, textures, shadows, illustrations, or background patterns.
-- If the logo cannot be reproduced exactly from the attached source, leave a blank white logo placement box labeled: "Approved UAB Medicine logo placement."
+- Do not draw, write, trace, or approximate the logo. The application adds the approved logo after generation.
+- Keep the bottom-right corner of the footer as uninterrupted white whitespace.
 - Do NOT render the strings "UAB", "UAB Medicine", or any brand wordmark anywhere in the image.
-- Reserve a bottom-right logo-safe region as a plain white rectangle with NO text, NO icons, and NO artwork (this area is intentionally left blank for app-side logo compositing).
-- Treat the logo-safe region as protected negative space: no background texture, chalk dust, gradients, borders, or decorative elements.
+- Do not mark that corner with a border, dashed line, label, caption, icon, shadow, colored fill, background texture, or decorative element.
+- Let the footer whitespace continue naturally into that corner; the app-side logo compositing will use it.
 {logo_instructions_extra}
 
 ## Chart/Data Accuracy Rules (STRICT — no exceptions)
@@ -309,7 +310,7 @@ def build_infographic_prompt(
 - If the source provides only median + IQR: render a DOT-AND-RANGE chart with exact median dots and IQR range bars — nothing else.
 - If the source provides only a hazard ratio + CI: render a single EVIDENCE CALLOUT CARD with that exact HR and CI.
 - Do NOT display HRs by outcome subtype (e.g. HFpEF vs HFrEF) unless those exact values are explicitly provided.
-- If the source provides incomplete data: generate a placeholder box labeled "Exact values to be inserted from [source figure/table]" — do not estimate or fill in.
+- If the source provides incomplete data: do not draw a quantitative chart for that item; use a concise evidence callout with only the supported text/numbers.
 - All numeric labels, axis values, and legend entries must match the source EXACTLY.
 - Do NOT invent whiskers, quartile boundaries, outlier points, or any visual element not explicitly in the source.
 - Do NOT introduce medical outcomes, disease terms, or metrics that are not present in the source documents or user context.
@@ -379,7 +380,7 @@ Use this structured chart summary to preserve chart intent and numeric fidelity:
  * EVIDENCE CALLOUT: Quote an exact finding from the attached source with its exact numbers/statistics.
  * DOT-AND-RANGE: Show exact median and IQR values as labeled markers.
  * WORKFLOW DIAGRAM: List each step in sequence with exact wording.
- * If data is incomplete: use a placeholder box labeled "Exact values to be inserted from [source figure/table]" — never estimate.
+ * If data is incomplete: omit the chart or use a short non-quantitative evidence callout; never estimate missing values.
 
 ## Instructions
 Use the image generation model to create the illustration based on the provided input.

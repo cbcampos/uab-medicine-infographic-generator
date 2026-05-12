@@ -107,6 +107,21 @@ AZURE_IMAGE_PROMPT_MAX_CHARS = 32000
 AZURE_IMAGE_PROMPT_SAFETY_MARGIN = 200
 AZURE_IMAGE_READ_TIMEOUT_S = 420
 
+# Canonical app-side logo placement. The image model is still prompted to leave this
+# area empty, but final output should not depend on whether it complies.
+LOGO_SAFE_ZONE_WIDTH_RATIO = 0.285
+LOGO_SAFE_ZONE_HEIGHT_RATIO = 0.09
+LOGO_SAFE_ZONE_RIGHT_MARGIN_RATIO = 0.0
+LOGO_SAFE_ZONE_BOTTOM_MARGIN_RATIO = 0.0
+LOGO_SAFE_ZONE_MIN_WIDTH = 360
+LOGO_SAFE_ZONE_MIN_HEIGHT = 92
+LOGO_SAFE_ZONE_MAX_WIDTH_RATIO = 0.34
+LOGO_SAFE_ZONE_MAX_HEIGHT_RATIO = 0.12
+LOGO_SAFE_ZONE_PADDING_RATIO = 0.08
+LOGO_SAFE_ZONE_LOGO_WIDTH_RATIO = 0.88
+LOGO_SAFE_ZONE_LOGO_BOTTOM_PADDING_RATIO = 0.10
+LOGO_SAFE_ZONE_LOGO_RIGHT_PADDING_RATIO = 0.03
+
 
 def _trim_prompt_section(prompt: str, section_title: str, max_chars: int, note: str) -> str:
     """Trim one markdown section body while preserving heading and structure."""
@@ -608,51 +623,52 @@ def fetch_image_bytes(image_url_or_data: str) -> bytes:
 
 
 def composite_logo_footer(image_bytes: bytes, logo_path: Path, style_key: str = "") -> bytes:
-    """Paste approved logo inside the existing canvas (no added footer height)."""
+    """Paste the approved logo with a tight bottom-right white knockout."""
     img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
     logo = Image.open(logo_path).convert("RGBA")
     w, h = img.size
 
-    style_key_norm = (style_key or "").lower()
-    is_chalkboard = "chalk" in style_key_norm
-    is_bold_graphic = ("bold" in style_key_norm) or ("comic" in style_key_norm)
+    safe_w = min(
+        int(w * LOGO_SAFE_ZONE_MAX_WIDTH_RATIO),
+        max(LOGO_SAFE_ZONE_MIN_WIDTH, int(w * LOGO_SAFE_ZONE_WIDTH_RATIO)),
+    )
+    safe_h = min(
+        int(h * LOGO_SAFE_ZONE_MAX_HEIGHT_RATIO),
+        max(LOGO_SAFE_ZONE_MIN_HEIGHT, int(h * LOGO_SAFE_ZONE_HEIGHT_RATIO)),
+    )
+    margin_x = max(int(w * LOGO_SAFE_ZONE_RIGHT_MARGIN_RATIO), 0)
+    margin_y = max(int(h * LOGO_SAFE_ZONE_BOTTOM_MARGIN_RATIO), 0)
+    safe_x0 = max(0, w - margin_x - safe_w)
+    safe_y0 = max(0, h - margin_y - safe_h)
+    safe_x1 = min(w, safe_x0 + safe_w)
+    safe_y1 = min(h, safe_y0 + safe_h)
 
-    # Keep logo constrained and style-aware.
-    margin = max(int(min(w, h) * 0.02), 12)
-    if is_bold_graphic:
-        max_logo_w = int(w * 0.18)
-        max_logo_h = int(h * 0.075)
-    elif is_chalkboard:
-        max_logo_w = int(w * 0.20)
-        max_logo_h = int(h * 0.085)
-    else:
-        max_logo_w = int(w * 0.24)
-        max_logo_h = int(h * 0.10)
+    pad = max(int(min(safe_w, safe_h) * LOGO_SAFE_ZONE_PADDING_RATIO), 8)
+    max_logo_w = max(1, min(safe_w - (2 * pad), int(safe_w * LOGO_SAFE_ZONE_LOGO_WIDTH_RATIO)))
+    max_logo_h = max(1, safe_h - (2 * pad))
     lw, lh = logo.size
     scale = min(max_logo_w / max(lw, 1), max_logo_h / max(lh, 1), 1.0)
     new_w, new_h = max(1, int(lw * scale)), max(1, int(lh * scale))
     logo_r = logo.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-    # Place bottom-right inside current canvas.
-    lx = w - new_w - margin
-    ly = h - new_h - margin
+    right_pad = max(int(safe_w * LOGO_SAFE_ZONE_LOGO_RIGHT_PADDING_RATIO), 8)
+    bottom_pad = max(int(safe_h * LOGO_SAFE_ZONE_LOGO_BOTTOM_PADDING_RATIO), 8)
+    lx = max(safe_x0, safe_x1 - new_w - right_pad)
+    ly = max(safe_y0, safe_y1 - new_h - bottom_pad)
 
-    # Opaque white knockout region for compliance:
-    # fully hide any model-generated pseudo-logo/wordmark underneath.
-    if is_bold_graphic:
-        card_pad_x = max(int(new_w * 0.08), 8)
-        card_pad_y = max(int(new_h * 0.12), 6)
-    elif is_chalkboard:
-        card_pad_x = max(int(new_w * 0.10), 10)
-        card_pad_y = max(int(new_h * 0.14), 8)
-    else:
-        card_pad_x = max(int(new_w * 0.10), 10)
-        card_pad_y = max(int(new_h * 0.16), 8)
-    card_x0 = max(0, lx - card_pad_x)
-    card_y0 = max(0, ly - card_pad_y)
-    card_x1 = min(w, lx + new_w + card_pad_x)
-    card_y1 = min(h, ly + new_h + card_pad_y)
-    card = Image.new("RGBA", (card_x1 - card_x0, card_y1 - card_y0), (255, 255, 255, 255))
+    # Clear only the area needed by the final logo. This avoids a tall white block
+    # covering lower-right content when the generated footer is already mostly usable.
+    knockout_pad_x = max(int(new_w * 0.025), 8)
+    knockout_pad_y = max(int(new_h * 0.14), 6)
+    card_x0 = max(0, lx - knockout_pad_x)
+    card_y0 = max(0, ly - knockout_pad_y)
+    card_x1 = min(w, lx + new_w + knockout_pad_x)
+    card_y1 = min(h, ly + new_h + knockout_pad_y)
+    card = Image.new(
+        "RGBA",
+        (card_x1 - card_x0, card_y1 - card_y0),
+        (255, 255, 255, 255),
+    )
     img.alpha_composite(card, (card_x0, card_y0))
 
     img.paste(logo_r, (lx, ly), logo_r)

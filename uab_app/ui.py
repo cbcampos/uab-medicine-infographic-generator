@@ -1524,8 +1524,8 @@ def main() -> None:
     logo_extra = ""
     if resolve_logo_path():
         logo_extra = (
-            "\n- Technical note for layout: Leave the bottom edge clear or use a plain white band; "
-            "the application may composite the approved logo file onto a white footer after generation.\n"
+            "\n- Technical note for layout: The application will composite the approved logo "
+            "into the bottom-right corner after generation; keep that corner empty.\n"
         )
 
     inferred_profile_preview: dict[str, Any] = {}

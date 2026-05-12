@@ -59,8 +59,8 @@ def main() -> int:
     # Keep context neutral to avoid steering beyond the source.
     user_context = ""
     logo_extra = (
-        "\n- Technical note for layout: Leave the bottom edge clear or use a plain white band; "
-        "the application may composite the approved logo file onto a white footer after generation.\n"
+        "\n- Technical note for layout: The application will composite the approved logo "
+        "into the bottom-right corner after generation; keep that corner empty.\n"
     )
     client = make_client("azure", api_key, endpoint, "2024-02-01")
     logo_path = resolve_logo_path()

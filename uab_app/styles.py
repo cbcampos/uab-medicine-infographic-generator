@@ -332,7 +332,7 @@ STYLES: dict[str, dict[str, str]] = {
 - BODY: 4-column poster-style layout with clear section blocks and ample spacing.
 - Include section headings such as: Abstract, Introduction, Methodology, Results, Acknowledgements, Conclusion.
 - Add one emphasized recommendation/callout panel in UAB Green with white text.
-- Include 1-2 rectangular image/photo placeholder areas integrated into the column layout.
+- Include 1-2 editorial image/photo areas only when useful visual content is available; do not label empty image areas as placeholders.
 - Use thin UAB Green divider lines between major columns/sections.
 - Keep overall look clean, institutional, and publication-ready (not playful, not comic, not watercolor).
 
