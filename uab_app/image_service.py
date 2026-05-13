@@ -19,6 +19,7 @@ from openai import APITimeoutError, AzureOpenAI, OpenAI
 from PIL import Image
 
 from uab_app.constants import (
+    AUDIENCE_SECTION_PLANS,
     BACKOFF_BASE_S,
     GEMINI_IMAGE_MODEL_ALIASES,
     GEMINI_OPENAI_BASE_URL,
@@ -543,9 +544,13 @@ def run_refinements_scan_vision(
     recommended_refinements, fidelity_notes.
     """
     img_b64 = base64.b64encode(image_bytes).decode("ascii")
+    audience = scan_context.get("audience", "")
+    audience_plan = AUDIENCE_SECTION_PLANS.get(audience, AUDIENCE_SECTION_PLANS["patient"])
+    required_panel_title = str(audience_plan.get("required_panel_title") or "")
     ctx_lines = [
         "## Generation context (ground truth for alignment)",
-        f"Audience: {scan_context.get('audience', '')}",
+        f"Audience: {audience}",
+        f'Expected audience panel title: "{required_panel_title}"',
         f"Visual style: {scan_context.get('style_name', '')}",
         "## User-context / intent",
         scan_context.get("user_context", "")[:8000],
@@ -559,11 +564,11 @@ def run_refinements_scan_vision(
         scan_context.get("effective_prompt_excerpt", "")[:14000],
     ]
     instruction = (
-        "You are a strict reviewer of a research/clinical infographic image.\n"
+        "You are a strict reviewer of an audience-specific medical/research infographic image.\n"
         "Read the attached infographic image carefully.\n"
         "Compare what is VISUALLY shown (headings, bullets, numbers, charts) to the user intent and "
         "source excerpt above.\n"
-        "Flag missing required elements, wrong emphasis, audience mismatch, illegible text, clutter, "
+        "Flag missing required elements, missing expected audience panel title, wrong emphasis, audience mismatch, illegible text, clutter, "
         "duplicated or conflicting numbers, and any numbers/claims that are not supported by the excerpt.\n"
         "Ignore the bottom-right corner: a real logo may be composited there by the app; do not grade "
         "logo rendering quality.\n"

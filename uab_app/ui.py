@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import os
 import threading
 import time
@@ -15,6 +16,7 @@ from typing import Any, Optional
 import logging
 import pandas as pd
 import streamlit as st
+from PIL import Image, ImageDraw, ImageFont
 
 # Configure logging to show in Streamlit
 logging.basicConfig(
@@ -83,6 +85,15 @@ from uab_app.parsers import extract_document_text
 from uab_app.prompts import build_infographic_prompt
 from uab_app.sanitize import injection_labels_for_ids, regex_cleanup_fallback, sanitize_input
 from uab_app.styles import STYLES
+
+
+AUDIENCE_KEYS = ["academic", "clinical", "patient", "community"]
+AUDIENCE_LABELS = {
+    "academic": "Academic / research",
+    "clinical": "Clinical / HCP",
+    "patient": "Patient / lay audience",
+    "community": "Community outreach",
+}
 
 
 def _data_series_has_meaningful_numbers(series: list[dict[str, Any]]) -> bool:
@@ -154,6 +165,10 @@ def init_session_state() -> None:
         st.session_state.session_id = str(uuid.uuid4())
     if "comparison_results" not in st.session_state:
         st.session_state.comparison_results = []
+    if "audience_results" not in st.session_state:
+        st.session_state.audience_results = []
+    if "audience_contact_sheet_bytes" not in st.session_state:
+        st.session_state.audience_contact_sheet_bytes = None
     if "last_prompt" not in st.session_state:
         st.session_state.last_prompt = ""
     if "last_effective_prompt" not in st.session_state:
@@ -222,6 +237,51 @@ def set_progress(
         "→ Fetching image → Displaying  \n"
         f"**Current:** {stage}"
     )
+
+
+def build_contact_sheet_png(
+    results: list[dict[str, Any]],
+    label_key: str,
+    labels: dict[str, str],
+    cols: int = 2,
+) -> bytes:
+    """Create a labeled contact sheet from generated PNG byte results."""
+    if not results:
+        return b""
+    thumb_w = 896
+    thumb_h = 512
+    label_h = 54
+    pad = 20
+    rows = (len(results) + cols - 1) // cols
+    sheet_w = cols * thumb_w + (cols + 1) * pad
+    sheet_h = rows * (thumb_h + label_h) + (rows + 1) * pad
+    sheet = Image.new("RGB", (sheet_w, sheet_h), "white")
+    draw = ImageDraw.Draw(sheet)
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 28)
+    except Exception:
+        font = ImageFont.load_default()
+
+    for idx, result in enumerate(results):
+        raw = result.get("bytes")
+        if not raw:
+            continue
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        img.thumbnail((thumb_w, thumb_h), Image.Resampling.LANCZOS)
+        row, col = divmod(idx, cols)
+        x = pad + col * (thumb_w + pad)
+        y = pad + row * (thumb_h + label_h + pad)
+        label_val = str(result.get(label_key) or "")
+        label = labels.get(label_val, label_val).upper()
+        draw.rectangle((x, y, x + thumb_w, y + label_h), fill=(26, 86, 50))
+        draw.text((x + 18, y + 12), label, fill="white", font=font)
+        iy = y + label_h
+        sheet.paste(img, (x, iy))
+        draw.rectangle((x, iy, x + thumb_w, iy + thumb_h), outline=(210, 210, 210), width=1)
+
+    buf = io.BytesIO()
+    sheet.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
 
 def render_generation_placeholder(slot: Any, title: str = "Generating image...") -> None:
@@ -644,8 +704,12 @@ def main() -> None:
         else:
             mode = st.radio(
                 "Mode",
-                options=["single", "compare"],
-                format_func=lambda m: "Single style" if m == "single" else "Style comparison (3-way)",
+                options=["single", "compare", "audiences"],
+                format_func=lambda m: {
+                    "single": "Single style",
+                    "compare": "Style comparison (3-way)",
+                    "audiences": "All 4 audiences",
+                }[m],
                 key="gen_mode",
             )
 
@@ -665,9 +729,11 @@ def main() -> None:
                 key="single_style",
                 disabled=(mode == "compare"),
             )
-        if mode == "single":
+        if mode in ("single", "audiences"):
             st.caption(STYLES[selected_style_key]["description"])
             compare_style_keys: list[str] = []
+            if mode == "audiences":
+                st.caption("Generates this style once for each intended audience and builds a contact sheet.")
         else:
             st.markdown("### 🔀 Styles to compare")
             all_style_keys = list(STYLES.keys())
@@ -717,18 +783,19 @@ def main() -> None:
                 )
             else:
                 st.markdown("### 👥 Audience")
-                audience = st.radio(
-                    "Who is this for?",
-                    options=["academic", "clinical", "patient", "community"],
-                    format_func=lambda a: {
-                        "academic": "Academic / research",
-                        "clinical": "Clinical / HCP",
-                        "patient": "Patient / lay audience",
-                        "community": "Community outreach",
-                    }[a],
-                    horizontal=True,
-                    key="audience_radio",
-                )
+                if mode == "audiences":
+                    audience = "academic"
+                    st.info(
+                        "All 4 audiences mode will generate: academic, clinical, patient, and community."
+                    )
+                else:
+                    audience = st.radio(
+                        "Who is this for?",
+                        options=AUDIENCE_KEYS,
+                        format_func=lambda a: AUDIENCE_LABELS[a],
+                        horizontal=True,
+                        key="audience_radio",
+                    )
 
                 st.markdown("### ✏️ Context")
                 user_context = st.text_area(
@@ -1530,7 +1597,7 @@ def main() -> None:
 
     inferred_profile_preview: dict[str, Any] = {}
     tentative_prompt = build_infographic_prompt(
-        selected_style_key if mode == "single" else list(STYLES.keys())[0],
+        selected_style_key if mode in ("single", "audiences") else list(STYLES.keys())[0],
         sanitized_context,
         [regex_cleanup_fallback(combined_docs)] if combined_docs else [],
         audience,
@@ -1595,16 +1662,27 @@ def main() -> None:
         with st.expander("Inferred source profile (last run)", expanded=False):
             prof = st.session_state.get("last_inferred_profile", {}) or {}
             if isinstance(prof, dict) and prof:
-                st.caption(
-                    "Normalized citation fields and inferred mode used for prompt building."
-                )
-                st.markdown(
-                    f"- Citation title: `{str(prof.get('citation_title','') or '[not inferred]')}`\n"
-                    f"- Citation journal: `{str(prof.get('citation_journal','') or '[not inferred]')}`\n"
-                    f"- Citation year: `{str(prof.get('citation_year','') or '[not inferred]')}`\n"
-                    f"- Citation authors: `{str(prof.get('citation_authors_short','') or '[not inferred]')}`\n"
-                    f"- Non-numeric mode: `{'ON' if bool(prof.get('non_numeric_mode')) else 'OFF'}`"
-                )
+                st.caption("Normalized citation fields and inferred mode used for prompt building.")
+                if all(isinstance(prof.get(k), dict) for k in AUDIENCE_KEYS):
+                    for aud_key in AUDIENCE_KEYS:
+                        p = prof.get(aud_key, {})
+                        with st.container(border=True):
+                            st.markdown(f"**{AUDIENCE_LABELS[aud_key]}**")
+                            st.markdown(
+                                f"- Citation title: `{str(p.get('citation_title','') or '[not inferred]')}`\n"
+                                f"- Citation journal: `{str(p.get('citation_journal','') or '[not inferred]')}`\n"
+                                f"- Citation year: `{str(p.get('citation_year','') or '[not inferred]')}`\n"
+                                f"- Citation authors: `{str(p.get('citation_authors_short','') or '[not inferred]')}`\n"
+                                f"- Non-numeric mode: `{'ON' if bool(p.get('non_numeric_mode')) else 'OFF'}`"
+                            )
+                else:
+                    st.markdown(
+                        f"- Citation title: `{str(prof.get('citation_title','') or '[not inferred]')}`\n"
+                        f"- Citation journal: `{str(prof.get('citation_journal','') or '[not inferred]')}`\n"
+                        f"- Citation year: `{str(prof.get('citation_year','') or '[not inferred]')}`\n"
+                        f"- Citation authors: `{str(prof.get('citation_authors_short','') or '[not inferred]')}`\n"
+                        f"- Non-numeric mode: `{'ON' if bool(prof.get('non_numeric_mode')) else 'OFF'}`"
+                    )
             else:
                 st.caption("No inferred profile yet. Generate once to inspect inferred fields.")
 
@@ -1701,9 +1779,16 @@ def main() -> None:
                 use_container_width=True,
                 disabled=gen_disabled,
             )
-        else:
+        elif mode == "compare":
             generate_btn = st.button(
                 "🎨 Generate 3-way comparison",
+                type="primary",
+                use_container_width=True,
+                disabled=gen_disabled,
+            )
+        else:
+            generate_btn = st.button(
+                "🎨 Generate all 4 audiences",
                 type="primary",
                 use_container_width=True,
                 disabled=gen_disabled,
@@ -1726,8 +1811,17 @@ def main() -> None:
         # Prevent stale compare outputs from appearing if a new run fails/aborts.
         if mode == "compare":
             st.session_state.comparison_results = []
+            st.session_state.audience_results = []
+            st.session_state.audience_contact_sheet_bytes = None
+        elif mode == "audiences":
+            st.session_state.comparison_results = []
+            st.session_state.audience_results = []
+            st.session_state.audience_contact_sheet_bytes = None
+            st.session_state.last_refinements_scan = None
         else:
             # Prevent stale single output from appearing if a new run fails/aborts.
+            st.session_state.audience_results = []
+            st.session_state.audience_contact_sheet_bytes = None
             st.session_state.last_image_bytes = None
             st.session_state.last_fidelity_qa_pass = False
             st.session_state.last_fidelity_qa_result = None
@@ -1755,37 +1849,57 @@ def main() -> None:
                 st.info(line)
 
             set_progress(progress_bar, status_label, "Inferring objective/topic", 0.40)
-            inferred = infer_source_profile_llm(
-                client=client,
-                provider=provider,
-                chat_model=chat_model,
-                user_context=sanitized_context,
-                cleaned_document_texts=cleaned_docs,
-                audience=audience,
-            )
-            inferred_profile = {
-                "topic": inferred.topic,
-                "objective": inferred.objective,
-                "source_type": inferred.source_type,
-                "why_matters": inferred.why_matters,
-                "key_points": inferred.key_points,
-                "recommended_sections": inferred.recommended_sections,
-                "chart_guidance": inferred.chart_guidance,
-                "citation_title": inferred.citation_title,
-                "citation_journal": inferred.citation_journal,
-                "citation_year": inferred.citation_year,
-                "citation_authors_short": inferred.citation_authors_short,
-                "citation_footer": inferred.citation_footer,
-                "implications_panel": inferred.implications_panel,
-                "claim_evidence_pairs": inferred.claim_evidence_pairs,
-                "non_numeric_mode": inferred.non_numeric_mode,
-            }
-            st.session_state.last_inferred_profile = inferred_profile
+
+            def source_profile_to_dict(inferred: Any) -> dict[str, Any]:
+                return {
+                    "topic": inferred.topic,
+                    "objective": inferred.objective,
+                    "source_type": inferred.source_type,
+                    "why_matters": inferred.why_matters,
+                    "key_points": inferred.key_points,
+                    "recommended_sections": inferred.recommended_sections,
+                    "chart_guidance": inferred.chart_guidance,
+                    "citation_title": inferred.citation_title,
+                    "citation_journal": inferred.citation_journal,
+                    "citation_year": inferred.citation_year,
+                    "citation_authors_short": inferred.citation_authors_short,
+                    "citation_footer": inferred.citation_footer,
+                    "implications_panel": inferred.implications_panel,
+                    "claim_evidence_pairs": inferred.claim_evidence_pairs,
+                    "non_numeric_mode": inferred.non_numeric_mode,
+                }
+
+            inferred_profiles: dict[str, dict[str, Any]] = {}
+            if mode == "audiences":
+                for aud_key in AUDIENCE_KEYS:
+                    inferred = infer_source_profile_llm(
+                        client=client,
+                        provider=provider,
+                        chat_model=chat_model,
+                        user_context=sanitized_context,
+                        cleaned_document_texts=cleaned_docs,
+                        audience=aud_key,
+                    )
+                    inferred_profiles[aud_key] = source_profile_to_dict(inferred)
+                inferred_profile = inferred_profiles["academic"]
+                st.session_state.last_inferred_profile = inferred_profiles
+            else:
+                inferred = infer_source_profile_llm(
+                    client=client,
+                    provider=provider,
+                    chat_model=chat_model,
+                    user_context=sanitized_context,
+                    cleaned_document_texts=cleaned_docs,
+                    audience=audience,
+                )
+                inferred_profile = source_profile_to_dict(inferred)
+                inferred_profiles[audience] = inferred_profile
+                st.session_state.last_inferred_profile = inferred_profile
 
             set_progress(progress_bar, status_label, "Building prompt", 0.45)
 
             styles_to_run = (
-                [selected_style_key] if mode == "single" else compare_style_keys
+                [selected_style_key] if mode in ("single", "audiences") else compare_style_keys
             )
             results: list[dict[str, Any]] = []
             logo_file = resolve_logo_path()
@@ -1921,7 +2035,132 @@ def main() -> None:
                     )
                     raise
 
-            if mode == "compare" and len(styles_to_run) == 3:
+            if mode == "audiences":
+                set_progress(progress_bar, status_label, "Submitting to API (4 audiences in parallel)", 0.55)
+
+                def audience_worker(aud_key: str) -> dict[str, Any]:
+                    style_id = selected_style_key
+                    profile = inferred_profiles.get(aud_key, inferred_profile)
+                    prompt = build_infographic_prompt(
+                        style_id,
+                        sanitized_context,
+                        cleaned_docs,
+                        aud_key,
+                        refinement,
+                        logo_extra,
+                        chart_reference_block=gen_ref_block,
+                        inferred_profile=profile,
+                    )
+                    if provider == "azure":
+                        max_prompt_len = (
+                            AZURE_IMAGE_PROMPT_MAX_CHARS - AZURE_IMAGE_PROMPT_SAFETY_MARGIN
+                        )
+                        effective_prompt = optimize_azure_image_prompt(prompt, max_prompt_len)
+                    else:
+                        effective_prompt = prompt
+                    prompt_sha = hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
+                    source_docs_sha = hashlib.sha256(
+                        "\n\n".join(cleaned_docs).encode("utf-8")
+                    ).hexdigest()
+                    t_req = time.perf_counter()
+                    try:
+                        image_ref = generate_with_retry(
+                            client,
+                            provider,
+                            image_model,
+                            effective_prompt,
+                            size,
+                            quality,
+                            progress_callback=None,
+                        )
+                        raw_bytes = fetch_image_bytes(image_ref)
+                        if logo_file:
+                            raw_bytes = composite_logo_footer(raw_bytes, logo_file, style_id)
+                        latency = int((time.perf_counter() - t_req) * 1000)
+                        audit_log(
+                            session_id,
+                            provider,
+                            style_id,
+                            aud_key,
+                            True,
+                            latency,
+                            "image_generation_audience_contact_sheet",
+                        )
+                        return {
+                            "style_key": style_id,
+                            "audience": aud_key,
+                            "bytes": raw_bytes,
+                            "prompt_len": len(prompt),
+                            "prompt_sha256": prompt_sha,
+                            "source_docs_sha256": source_docs_sha,
+                        }
+                    except BaseException as exc:
+                        latency = int((time.perf_counter() - t_req) * 1000)
+                        audit_log(
+                            session_id,
+                            provider,
+                            style_id,
+                            aud_key,
+                            False,
+                            latency,
+                            "image_generation_audience_contact_sheet",
+                            {"error_kind": exc.__class__.__name__},
+                        )
+                        raise
+
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    futs = [pool.submit(audience_worker, aud_key) for aud_key in AUDIENCE_KEYS]
+                    t0_wait = time.perf_counter()
+                    target_seconds = 180
+                    while True:
+                        done_count = sum(1 for f in futs if f.done())
+                        if done_count == len(futs):
+                            break
+                        elapsed = int(time.perf_counter() - t0_wait)
+                        mm = elapsed // 60
+                        ss = elapsed % 60
+                        progress_ratio = min(elapsed / max(target_seconds, 1), 1.0)
+                        gen_frac = 0.55 + (0.82 - 0.55) * progress_ratio
+                        progress_bar.progress(min(1.0, max(0.0, gen_frac)))
+                        if elapsed <= target_seconds:
+                            status_label.markdown(
+                                "**Progress:** Cleaning document text → Building prompt → Submitting to API "
+                                "→ Fetching image → Displaying  \n"
+                                f"**Current:** Generating 4 audiences in parallel ({done_count}/4 done, {mm:02d}:{ss:02d} / 03:00)"
+                            )
+                            timer_slot.info(
+                                f"Rendering 4 audiences in parallel: {done_count}/4 complete, "
+                                f"{mm:02d}:{ss:02d} elapsed (target ~03:00)."
+                            )
+                        else:
+                            status_label.markdown(
+                                "**Progress:** Cleaning document text → Building prompt → Submitting to API "
+                                "→ Fetching image → Displaying  \n"
+                                f"**Current:** Generating 4 audiences in parallel ({done_count}/4 done, {mm:02d}:{ss:02d})"
+                            )
+                            timer_slot.warning(
+                                f"Still generating audience set ({done_count}/4 complete, {mm:02d}:{ss:02d}). "
+                                "Complex requests can finish any minute now."
+                            )
+                        time.sleep(1)
+                    by_audience: dict[str, dict[str, Any]] = {}
+                    for fut in futs:
+                        row = fut.result()
+                        by_audience[row["audience"]] = row
+                timer_slot.empty()
+                results = [by_audience[aud_key] for aud_key in AUDIENCE_KEYS]
+                st.session_state.audience_contact_sheet_bytes = build_contact_sheet_png(
+                    results,
+                    "audience",
+                    {k: k for k in AUDIENCE_KEYS},
+                    cols=2,
+                )
+                if results:
+                    st.session_state.last_effective_prompt_sha256 = results[0].get(
+                        "prompt_sha256", ""
+                    )
+                set_progress(progress_bar, status_label, "Displaying", 1.0)
+            elif mode == "compare" and len(styles_to_run) == 3:
                 set_progress(progress_bar, status_label, "Submitting to API (3 parallel)", 0.55)
 
                 def parallel_worker(sid: str) -> dict[str, Any]:
@@ -2074,6 +2313,16 @@ def main() -> None:
                 )
             elif mode == "compare":
                 st.session_state.comparison_results = results
+            elif mode == "audiences":
+                st.session_state.audience_results = results
+                st.session_state.generation_history.append(
+                    {
+                        "thumb_bytes": st.session_state.audience_contact_sheet_bytes,
+                        "style": f"{selected_style_key} · all audiences",
+                        "ts": time.time(),
+                        "audience": "all 4",
+                    }
+                )
 
             progress_bar.progress(1.0)
             st.success("Done.")
@@ -2090,6 +2339,9 @@ def main() -> None:
             cleaning_detail_slot.empty()
             if mode == "compare":
                 st.session_state.comparison_results = []
+            elif mode == "audiences":
+                st.session_state.audience_results = []
+                st.session_state.audience_contact_sheet_bytes = None
             else:
                 st.session_state.last_image_bytes = None
                 st.session_state.last_fidelity_qa_pass = False
@@ -2404,6 +2656,38 @@ def main() -> None:
             "Guided refine uses vision-guided prompt refinement from the current image "
             "(not direct image-edit endpoint replacement)."
         )
+
+    # ── Output: audience contact sheet ──
+    if st.session_state.audience_results and mode == "audiences":
+        st.markdown("### 🖼️ All 4 audiences")
+        contact_bytes = st.session_state.get("audience_contact_sheet_bytes")
+        if contact_bytes:
+            st.image(contact_bytes, use_container_width=True)
+            st.download_button(
+                "📥 Download contact sheet",
+                data=contact_bytes,
+                file_name=f"infographic_{selected_style_key}_all_audiences_contact_sheet.png",
+                mime="image/png",
+                use_container_width=True,
+                key="dl_audience_contact_sheet",
+            )
+        st.markdown("#### Individual images")
+        cols = st.columns(4)
+        for i, result in enumerate(st.session_state.audience_results):
+            aud_key = str(result.get("audience") or "")
+            with cols[i % 4]:
+                st.caption(AUDIENCE_LABELS.get(aud_key, aud_key))
+                if result.get("prompt_sha256"):
+                    st.caption(f"Prompt hash: `{str(result['prompt_sha256'])[:12]}`")
+                st.image(result["bytes"], use_container_width=True)
+                st.download_button(
+                    "Download",
+                    data=result["bytes"],
+                    file_name=f"infographic_{selected_style_key}_{aud_key}.png",
+                    mime="image/png",
+                    use_container_width=True,
+                    key=f"dl_audience_{i}_{aud_key}",
+                )
 
     # ── Output: comparison ──
     if st.session_state.comparison_results and mode == "compare":

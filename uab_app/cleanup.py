@@ -12,6 +12,7 @@ import re
 from openai import AzureOpenAI, OpenAI
 
 from uab_app.constants import (
+    AUDIENCE_SECTION_PLANS,
     DOCUMENT_CLEAN_CHUNK_OVERLAP,
     DOCUMENT_CLEAN_MAX_CHUNK_CHARS,
 )
@@ -80,6 +81,14 @@ def infer_source_profile_llm(
     docs_joined = "\n\n".join([d for d in cleaned_document_texts if d.strip()])
     docs_snippet = docs_joined[:12000] if docs_joined else ""
     user_ctx = (user_context or "").strip()
+    audience_plan = AUDIENCE_SECTION_PLANS.get(audience, AUDIENCE_SECTION_PLANS["patient"])
+    audience_required_sections = [
+        str(x) for x in audience_plan.get("required_sections", []) if str(x).strip()
+    ]
+    audience_avoid_sections = [
+        str(x) for x in audience_plan.get("avoid_sections", []) if str(x).strip()
+    ]
+    audience_required_panel_title = str(audience_plan.get("required_panel_title") or "").strip()
 
     fallback_topic = "the attached source material"
     fallback_objective = (
@@ -91,14 +100,18 @@ def infer_source_profile_llm(
         source_type="unknown",
         why_matters="Explain practical relevance for the target audience.",
         key_points=["Summarize key findings accurately from source text."],
-        recommended_sections=["Background", "Key Findings", "Why This Matters", "Actions/Implications"],
+        recommended_sections=audience_required_sections
+        or ["Background", "Key Findings", "Why This Matters", "Actions/Implications"],
         chart_guidance="Include charts only when explicit numeric data is present in the source.",
         citation_title="",
         citation_journal="",
         citation_year="",
         citation_authors_short="",
         citation_footer="Source: [Title]. [Journal], [Year].",
-        implications_panel="What this means for practice/research: summarize practical impact in 2-3 short bullets.",
+        implications_panel=(
+            f"{audience_required_panel_title}: summarize audience-relevant implications in 2-3 short, "
+            "source-grounded bullets."
+        ),
         claim_evidence_pairs=[
             "Claim: [fill from source]. Evidence: [verbatim source phrase or statistic]."
         ],
@@ -117,10 +130,35 @@ def infer_source_profile_llm(
         "topic, objective, source_type, why_matters, key_points, recommended_sections, chart_guidance, "
         "citation_title, citation_journal, citation_year, citation_authors_short, citation_footer, "
         "implications_panel, claim_evidence_pairs, non_numeric_mode. "
+        "Infer recommended_sections for the selected audience and the supplied deterministic audience plan. "
+        "Do not include audience-inappropriate sections. Do not force sections unsupported by the source. "
         "Use concise, source-grounded wording. Do not invent facts."
     )
     user_msg = (
         f"Audience: {audience}\n"
+        "Deterministic audience section plan (authoritative if there is a conflict):\n"
+        f"- Required sections or close variants: {', '.join(audience_required_sections) or '[none]'}\n"
+        f'- Required audience panel title: "{audience_required_panel_title or "[none]"}"\n'
+        f"- Avoid sections/framing: {', '.join(audience_avoid_sections) or '[none]'}\n"
+        f"- Chart policy: {audience_plan.get('chart_policy', '')}\n"
+        f"- Language policy: {audience_plan.get('language_policy', '')}\n"
+        "Additional inference constraints:\n"
+        "- For qualitative/non-numeric sources, do not recommend visual numeric values, pseudo-statistics, "
+        "device readings, app dashboard values, or chart labels unless exact values appear in the source.\n"
+        "- For qualitative/non-numeric sources, prefer abstract phone/chat/check-in icons or unreadable device "
+        "silhouettes instead of glucose meters or monitoring devices with readable display screens.\n"
+        "- Keep recommended_sections and implications concise for a scannable infographic: favor 4-6 major panels, "
+        "1-3 short bullets per panel, and brief phrases instead of paragraph text.\n"
+        "- Do not infer demographic percentages, age, sample characteristics, participant descriptors, location "
+        "details, deprivation indices, food insecurity rates, subgroup details, or other study descriptors unless "
+        "those exact details are present in the source/user context.\n"
+        "- For clinical audiences, do not infer demographic percentages, age, food insecurity, deprivation index, "
+        "risk scores, or clinical measurements unless source-confirmed.\n"
+        "- For patient audiences, avoid outcome promises; prefer may/can language and care-team support framing.\n"
+        "- For community audiences, emphasize systems, access, trust, technology fit, resources, and collective action; "
+        "community actions should be program/system design actions such as designing with community partners, "
+        "reducing access barriers, supporting trusted messengers, and offering flexible low-burden options; do not "
+        "imply specific local programs unless named in the source.\n\n"
         f"User context (may be empty):\n{user_ctx or '[none]'}\n\n"
         f"Source text excerpt:\n{docs_snippet or '[none]'}"
     )
