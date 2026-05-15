@@ -82,8 +82,8 @@ def make_client(
         return c
     normalized = normalize_azure_endpoint(endpoint) if endpoint else ""
     print(
-        "[DEBUG] Azure client created with endpoint: "
-        f"{normalized}, api_version: {AZURE_API_VERSION_LOCKED}"
+        "[DEBUG] Azure client created with configured endpoint; "
+        f"api_version: {AZURE_API_VERSION_LOCKED}"
     )
     return AzureOpenAI(
         api_key=api_key,

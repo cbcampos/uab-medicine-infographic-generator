@@ -1,13 +1,16 @@
 """Generate one style example image per available style.
 
 Usage:
-  .venv/bin/python generate_style_examples.py "/path/to/source.pdf"
+  .venv/bin/python generate_style_examples.py "/path/to/source.pdf" --force --audience academic
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -29,12 +32,33 @@ from uab_app.sanitize import regex_cleanup_fallback, sanitize_input
 from uab_app.styles import STYLES
 
 
-def main() -> int:
-    if len(sys.argv) < 2:
-        print("Usage: .venv/bin/python generate_style_examples.py /absolute/path/to/source.pdf")
-        return 2
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate one style guide image per available style.")
+    parser.add_argument("pdf_path", help="Absolute path to source PDF")
+    parser.add_argument(
+        "--audience",
+        choices=["academic", "clinical", "patient", "community"],
+        default="academic",
+        help="Audience plan to use for generated style examples.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing style example images.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=3,
+        help="Number of styles to generate concurrently.",
+    )
+    return parser.parse_args()
 
-    pdf_path = Path(sys.argv[1]).expanduser().resolve()
+
+def main() -> int:
+    args = parse_args()
+
+    pdf_path = Path(args.pdf_path).expanduser().resolve()
     if not pdf_path.is_file():
         print(f"PDF not found: {pdf_path}")
         return 2
@@ -77,7 +101,7 @@ def main() -> int:
         chat_model=chat_model,
         user_context=user_context,
         cleaned_document_texts=[cleaned_doc],
-        audience="community",
+        audience=args.audience,
     )
     inferred_profile = {
         "topic": inferred.topic,
@@ -97,17 +121,21 @@ def main() -> int:
         "non_numeric_mode": inferred.non_numeric_mode,
     }
 
-    for style_key in STYLES.keys():
+    print_lock = threading.Lock()
+
+    def generate_style(style_key: str) -> Path:
         out_path = out_dir / f"{style_key}.png"
-        if out_path.is_file():
-            print(f"[STYLE] {style_key} (skip: already exists)")
-            continue
-        print(f"[STYLE] {style_key}")
+        if out_path.is_file() and not args.force:
+            with print_lock:
+                print(f"[STYLE] {style_key} (skip: already exists)")
+            return out_path
+        with print_lock:
+            print(f"[STYLE] {style_key}")
         prompt = build_infographic_prompt(
             style_id=style_key,
             user_context=user_context,
             cleaned_document_texts=[cleaned_doc],
-            audience_key="community",
+            audience_key=args.audience,
             refinement_notes="",
             logo_instructions_extra=logo_extra,
             chart_reference_block="",
@@ -127,7 +155,21 @@ def main() -> int:
         if logo_path:
             image_bytes = composite_logo_footer(image_bytes, logo_path, style_key)
         out_path.write_bytes(image_bytes)
-        print(f"  -> wrote {out_path}")
+        with print_lock:
+            print(f"  -> wrote {out_path}")
+        return out_path
+
+    style_keys = list(STYLES.keys())
+    workers = max(1, min(args.workers, len(style_keys)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(generate_style, style_key): style_key for style_key in style_keys}
+        for future in as_completed(futures):
+            style_key = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                print(f"[ERROR] {style_key}: {exc}", file=sys.stderr)
+                return 1
 
     print(f"Done. Style examples saved to: {out_dir}")
     return 0

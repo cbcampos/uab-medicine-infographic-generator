@@ -96,6 +96,13 @@ AUDIENCE_LABELS = {
 }
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _data_series_has_meaningful_numbers(series: list[dict[str, Any]]) -> bool:
     """True if extracted/manual rows likely contain chart numbers for prompt use."""
     if not series:
@@ -483,6 +490,8 @@ def main() -> None:
     apply_uab_brand_css()
     init_session_state()
     session_id = st.session_state.session_id
+    production_mode = _env_flag("UAB_INFOGRAPHIC_PRODUCTION")
+    hide_api_config = production_mode or _env_flag("UAB_HIDE_API_CONFIG")
 
     st.markdown(
         """
@@ -568,10 +577,14 @@ def main() -> None:
             format_func=lambda m: "Basic (recommended)" if m == "basic" else "Advanced",
             index=0,
             key="ux_experience_mode",
-            help="Basic keeps the workflow simple. Advanced exposes full controls.",
+            help="Basic keeps the workflow simple. Advanced exposes full generation controls.",
         )
+        if hide_api_config:
+            st.caption("Using configured UAB Azure image generation.")
         st.markdown("---")
-        if experience_mode == "basic":
+        if hide_api_config:
+            provider = "azure"
+        elif experience_mode == "basic":
             provider = st.session_state.get("sidebar_provider", _autodetect_provider())
             st.caption(
                 "Basic mode uses saved/environment API settings automatically. "
@@ -593,7 +606,7 @@ def main() -> None:
             )
             st.markdown("---")
 
-        if experience_mode == "advanced" and provider == "openai":
+        if not hide_api_config and experience_mode == "advanced" and provider == "openai":
             with st.expander("🔑 OpenAI", expanded=True):
                 st.text_input(
                     "API Key",
@@ -619,7 +632,7 @@ def main() -> None:
                     key="openai_image_model",
                     help="Must match an image-capable model available to your API key (e.g. gpt-image-2).",
                 )
-        elif experience_mode == "advanced" and provider == "azure":
+        elif not hide_api_config and experience_mode == "advanced" and provider == "azure":
             with st.expander("🔷 Azure OpenAI", expanded=True):
                 st.text_input(
                     "API Key",
@@ -666,7 +679,7 @@ def main() -> None:
                     key="azure_vision_deployment",
                     help="Deployment name for gpt-4o-class vision model",
                 )
-        elif experience_mode == "advanced":
+        elif not hide_api_config and experience_mode == "advanced":
             with st.expander("🟣 Gemini", expanded=True):
                 st.text_input(
                     "API Key",
@@ -755,9 +768,7 @@ def main() -> None:
 
         st.markdown("---")
         logo_path = resolve_logo_path()
-        if logo_path:
-            st.success(f"Logo file found: `{logo_path.name}`")
-        else:
+        if not logo_path and not production_mode:
             st.info(
                 "Place `uab-medicine-logo.jpg` in `assets/` or set `UAB_MEDICINE_LOGO_PATH`. "
                 "Post-processing will composite the approved logo when the file is available."
@@ -913,6 +924,15 @@ def main() -> None:
 
     # ── API helpers (used by chart extraction + generation) ──
     def get_credentials() -> tuple[bool, str, Any, str, str]:
+        if hide_api_config:
+            api_key = os.environ.get("AZURE_OPENAI_API_KEY", "")
+            endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+            img_model = os.environ.get("AZURE_OPENAI_IMAGE_MODEL", "gpt-image-2")
+            chat_model = os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini")
+            if not api_key or not endpoint:
+                return False, "Azure generation is not configured on this server.", None, "", chat_model
+            client = make_client("azure", api_key, endpoint, "2024-02-01")
+            return True, "", client, img_model, chat_model
         if provider == "openai":
             api_key = st.session_state.get("openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
             chat_model = (
@@ -958,6 +978,8 @@ def main() -> None:
         return True, "", client, img_model, chat_model
 
     def get_vision_model_name() -> str:
+        if hide_api_config:
+            return os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT", OPENAI_DEFAULT_VISION_MODEL)
         if provider == "openai":
             return (
                 st.session_state.get("openai_vision_model", "").strip()
@@ -1687,7 +1709,12 @@ def main() -> None:
                 st.caption("No inferred profile yet. Generate once to inspect inferred fields.")
 
     credential_issue = ""
-    if provider == "openai":
+    if hide_api_config:
+        key_val = os.environ.get("AZURE_OPENAI_API_KEY", "")
+        endpoint_val = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+        if not key_val or not endpoint_val:
+            credential_issue = "Azure generation is not configured on this server."
+    elif provider == "openai":
         key_val = st.session_state.get("openai_api_key", "") or os.environ.get("OPENAI_API_KEY", "")
         if not key_val:
             credential_issue = "OpenAI API key is missing."
