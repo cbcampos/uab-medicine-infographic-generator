@@ -6,6 +6,7 @@ import base64
 import hashlib
 import io
 import os
+import re
 import threading
 import time
 import uuid
@@ -184,6 +185,8 @@ def init_session_state() -> None:
         st.session_state.last_effective_prompt_sha256 = ""
     if "last_inferred_profile" not in st.session_state:
         st.session_state.last_inferred_profile = {}
+    if "last_download_basename" not in st.session_state:
+        st.session_state.last_download_basename = "infographic"
     if "refine_generate_now" not in st.session_state:
         st.session_state.refine_generate_now = False
     if "last_guided_refine_plan" not in st.session_state:
@@ -289,6 +292,43 @@ def build_contact_sheet_png(
     buf = io.BytesIO()
     sheet.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
+
+
+def slugify_filename(value: str, max_len: int = 80) -> str:
+    """Convert a title/topic into a compact, safe filename stem."""
+    text = value.strip().lower()
+    text = re.sub(r"['`]", "", text)
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    text = re.sub(r"-{2,}", "-", text).strip("-")
+    return (text[:max_len].rstrip("-") or "infographic")
+
+
+def download_basename_from_profile(
+    profile: dict[str, Any] | None,
+    user_context: str = "",
+) -> str:
+    """Choose a source-related filename stem for generated downloads."""
+    profile = profile or {}
+    candidates = (
+        str(profile.get("citation_title") or ""),
+        str(profile.get("topic") or ""),
+        str(profile.get("objective") or ""),
+        user_context,
+    )
+    for candidate in candidates:
+        if candidate.strip():
+            return slugify_filename(candidate)
+    return "infographic"
+
+
+def png_filename(base: str, *parts: str) -> str:
+    suffix = "-".join(
+        slugify_filename(str(part), max_len=36)
+        for part in parts
+        if str(part).strip()
+    )
+    stem = slugify_filename(base)
+    return f"{stem}-{suffix}.png" if suffix else f"{stem}.png"
 
 
 def render_generation_placeholder(slot: Any, title: str = "Generating image...") -> None:
@@ -1910,6 +1950,10 @@ def main() -> None:
                     inferred_profiles[aud_key] = source_profile_to_dict(inferred)
                 inferred_profile = inferred_profiles["academic"]
                 st.session_state.last_inferred_profile = inferred_profiles
+                st.session_state.last_download_basename = download_basename_from_profile(
+                    inferred_profile,
+                    sanitized_context,
+                )
             else:
                 inferred = infer_source_profile_llm(
                     client=client,
@@ -1922,6 +1966,10 @@ def main() -> None:
                 inferred_profile = source_profile_to_dict(inferred)
                 inferred_profiles[audience] = inferred_profile
                 st.session_state.last_inferred_profile = inferred_profile
+                st.session_state.last_download_basename = download_basename_from_profile(
+                    inferred_profile,
+                    sanitized_context,
+                )
 
             set_progress(progress_bar, status_label, "Building prompt", 0.45)
 
@@ -2120,6 +2168,10 @@ def main() -> None:
                             "prompt_len": len(prompt),
                             "prompt_sha256": prompt_sha,
                             "source_docs_sha256": source_docs_sha,
+                            "download_basename": download_basename_from_profile(
+                                profile,
+                                sanitized_context,
+                            ),
                         }
                     except BaseException as exc:
                         latency = int((time.perf_counter() - t_req) * 1000)
@@ -2242,6 +2294,10 @@ def main() -> None:
                             "prompt_len": len(prompt),
                             "prompt_sha256": prompt_sha,
                             "source_docs_sha256": source_docs_sha,
+                            "download_basename": download_basename_from_profile(
+                                inferred_profile,
+                                sanitized_context,
+                            ),
                         }
                     except BaseException as exc:
                         latency = int((time.perf_counter() - t_req) * 1000)
@@ -2402,7 +2458,11 @@ def main() -> None:
         st.download_button(
             "📥 Download PNG",
             data=st.session_state.last_image_bytes,
-            file_name="infographic.png",
+            file_name=png_filename(
+                st.session_state.get("last_download_basename", "infographic"),
+                selected_style_key,
+                audience,
+            ),
             mime="image/png",
             use_container_width=True,
             key="dl_single",
@@ -2693,7 +2753,11 @@ def main() -> None:
             st.download_button(
                 "📥 Download contact sheet",
                 data=contact_bytes,
-                file_name=f"infographic_{selected_style_key}_all_audiences_contact_sheet.png",
+                file_name=png_filename(
+                    st.session_state.get("last_download_basename", "infographic"),
+                    selected_style_key,
+                    "all-audiences-contact-sheet",
+                ),
                 mime="image/png",
                 use_container_width=True,
                 key="dl_audience_contact_sheet",
@@ -2710,7 +2774,14 @@ def main() -> None:
                 st.download_button(
                     "Download",
                     data=result["bytes"],
-                    file_name=f"infographic_{selected_style_key}_{aud_key}.png",
+                    file_name=png_filename(
+                        str(
+                            result.get("download_basename")
+                            or st.session_state.get("last_download_basename", "infographic")
+                        ),
+                        selected_style_key,
+                        aud_key,
+                    ),
                     mime="image/png",
                     use_container_width=True,
                     key=f"dl_audience_{i}_{aud_key}",
@@ -2732,7 +2803,14 @@ def main() -> None:
                 st.download_button(
                     "Download",
                     data=r["bytes"],
-                    file_name=f"infographic_compare_{r['style_key']}.png",
+                    file_name=png_filename(
+                        str(
+                            r.get("download_basename")
+                            or st.session_state.get("last_download_basename", "infographic")
+                        ),
+                        "compare",
+                        str(r["style_key"]),
+                    ),
                     mime="image/png",
                     use_container_width=True,
                     key=f"dl_cmp_{i}",
