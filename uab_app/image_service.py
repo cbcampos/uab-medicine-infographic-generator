@@ -491,10 +491,28 @@ def _parse_refinements_scan_json(raw: str) -> dict[str, Any]:
 def normalize_refinements_scan(data: dict[str, Any]) -> dict[str, Any]:
     """Coerce vision JSON into stable keys."""
     grade = str(data.get("letter_grade") or data.get("grade") or "").strip()
+    scorecard_raw = data.get("scorecard") or data.get("category_scores") or {}
+    scorecard: dict[str, dict[str, str]] = {}
+    if isinstance(scorecard_raw, dict):
+        for key, value in scorecard_raw.items():
+            label = str(key or "").strip()
+            if not label:
+                continue
+            if isinstance(value, dict):
+                score = str(value.get("score") or value.get("grade") or "").strip()
+                note = str(value.get("note") or value.get("rationale") or "").strip()
+            else:
+                score = str(value or "").strip()
+                note = ""
+            scorecard[label] = {"score": score, "note": note}
     refs = data.get("recommended_refinements") or data.get("refinements") or []
     if not isinstance(refs, list):
         refs = []
     refs = [str(x).strip() for x in refs if str(x).strip()]
+    prompt_edits = data.get("prompt_edits") or data.get("concrete_prompt_edits") or []
+    if not isinstance(prompt_edits, list):
+        prompt_edits = []
+    prompt_edits = [str(x).strip() for x in prompt_edits if str(x).strip()]
     strengths = data.get("strengths") or []
     if not isinstance(strengths, list):
         strengths = []
@@ -507,10 +525,12 @@ def normalize_refinements_scan(data: dict[str, Any]) -> dict[str, Any]:
     fidelity = str(data.get("fidelity_notes") or data.get("source_fidelity") or "").strip()
     return {
         "letter_grade": grade or "?",
+        "scorecard": scorecard,
         "alignment_summary": summary,
         "strengths": strengths,
         "issues": issues,
         "recommended_refinements": refs,
+        "prompt_edits": prompt_edits,
         "fidelity_notes": fidelity,
     }
 
@@ -521,11 +541,12 @@ def format_refinements_scan_for_notes(scan: dict[str, Any]) -> str:
     lines: list[str] = [
         f"[Refinements scan — letter grade: {s['letter_grade']}]",
         "",
-        "Suggested changes for the next generation:",
+        "Concrete prompt edits for the next generation:",
     ]
-    for r in s["recommended_refinements"]:
+    edits = s.get("prompt_edits") or s.get("recommended_refinements") or []
+    for r in edits:
         lines.append(f"- {r}")
-    if not s["recommended_refinements"]:
+    if not edits:
         lines.append(
             "- (No specific refinements returned — re-run the scan or add manual notes.)"
         )
@@ -540,8 +561,8 @@ def run_refinements_scan_vision(
 ) -> dict[str, Any]:
     """
     Vision review: compare the rendered infographic to user intent and source excerpts.
-    Returns a dict with letter_grade, alignment_summary, strengths, issues,
-    recommended_refinements, fidelity_notes.
+    Returns a dict with letter_grade, scorecard, alignment_summary, strengths,
+    issues, recommended_refinements, prompt_edits, fidelity_notes.
     """
     img_b64 = base64.b64encode(image_bytes).decode("ascii")
     audience = scan_context.get("audience", "")
@@ -582,12 +603,23 @@ def run_refinements_scan_vision(
         "logo rendering quality.\n"
         "Return ONE JSON object ONLY (no markdown) with EXACTLY these keys:\n"
         '"letter_grade": string (choose one of: A+, A, A-, B+, B, B-, C+, C, C-, D, F)\n'
+        '"scorecard": object with exactly these six keys: '
+        '"factual_fidelity", "audience_fit", "text_density", "visual_hierarchy", '
+        '"style_fidelity", "footer_logo_safety". Each value is an object with '
+        '"score" (A-F) and "note" (one concise sentence).\n'
         '"alignment_summary": string (2-4 sentences)\n'
         '"strengths": array of strings (2-5 short bullets)\n'
         '"issues": array of strings (2-7 short bullets)\n'
         '"recommended_refinements": array of strings (5-12 concise, actionable instructions for the '
         "NEXT image generation; reference regions like TOP / LEFT / RIGHT / BOTTOM; do not repeat the whole brief)\n"
+        '"prompt_edits": array of strings (3-5 direct prompt-note edits ready to paste into the next generation; '
+        "each should be imperative, concrete, and scoped to one problem)\n"
         '"fidelity_notes": string (optional; call out any numeric or citation mismatches you notice)\n'
+        "Scoring rubric: factual_fidelity checks unsupported claims, wrong numbers, and citation drift; "
+        "audience_fit checks whether the sections and tone match the selected audience; text_density checks "
+        "too many bullets, tiny text, and paragraph blocks; visual_hierarchy checks whether the main message "
+        "is obvious in 20-30 seconds; style_fidelity checks adherence to the selected UAB style; "
+        "footer_logo_safety checks whether the footer/logo area remains clear.\n"
     )
     user_text = instruction + "\n" + "\n".join(ctx_lines)
     messages = [

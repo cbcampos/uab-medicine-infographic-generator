@@ -2843,6 +2843,27 @@ def main() -> None:
                 if (scan_data.get("alignment_summary") or "").strip():
                     st.markdown("**Summary**")
                     st.markdown(scan_data["alignment_summary"])
+                scorecard = scan_data.get("scorecard") or {}
+                if isinstance(scorecard, dict) and scorecard:
+                    st.markdown("**Scorecard**")
+                    labels = {
+                        "factual_fidelity": "Factual fidelity",
+                        "audience_fit": "Audience fit",
+                        "text_density": "Text density",
+                        "visual_hierarchy": "Visual hierarchy",
+                        "style_fidelity": "Style fidelity",
+                        "footer_logo_safety": "Footer/logo safety",
+                    }
+                    for key, label in labels.items():
+                        item = scorecard.get(key) or scorecard.get(label) or {}
+                        if isinstance(item, dict):
+                            score = str(item.get("score") or "?").strip()
+                            note = str(item.get("note") or "").strip()
+                        else:
+                            score = str(item or "?").strip()
+                            note = ""
+                        if score or note:
+                            st.markdown(f"- **{label}: {score or '?'}**" + (f" — {note}" if note else ""))
                 if scan_data.get("strengths"):
                     st.markdown("**Strengths**")
                     for s in scan_data["strengths"]:
@@ -2857,6 +2878,10 @@ def main() -> None:
                 st.markdown("**Recommended refinements (next prompt)**")
                 for r in scan_data.get("recommended_refinements") or []:
                     st.markdown(f"- {r}")
+                if scan_data.get("prompt_edits"):
+                    st.markdown("**Concrete prompt edits**")
+                    for r in scan_data.get("prompt_edits") or []:
+                        st.markdown(f"- {r}")
 
                 apply_txt = format_refinements_scan_for_notes(scan_data)
                 ap1, ap2 = st.columns(2)
