@@ -154,8 +154,10 @@ def _format_audience_hard_constraints(audience_key: str) -> str:
         "community": [
             "Prefer systems, access, trust, technology fit, resources, and culturally responsive support over "
             "individual behavior instructions.",
-            "Community actions should be program/system design actions such as designing with community partners, "
-            "reducing access barriers, supporting trusted messengers, and offering flexible low-burden options.",
+            "Do not force a Community Actions/Resources panel. If the source does not describe interventions, resources, "
+            "implementation steps, or explicit recommendations, use Community Interpretation instead.",
+            "Community actions should appear only when source-supported and should stay generic unless a specific program "
+            "or resource is named in the source.",
             "Do not imply specific local programs, resources, services, or availability unless named in the source.",
             "Do not name specific barriers such as transportation, cost, food access, time constraints, or trusted "
             "messengers unless those exact concepts are present in the source.",

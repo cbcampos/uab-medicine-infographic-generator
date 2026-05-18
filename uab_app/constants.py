@@ -218,7 +218,7 @@ AUDIENCE_SECTION_PLANS = {
             "Community Context",
             "What We Learned",
             "Barriers/Supports",
-            "Community Actions/Resources",
+            "Community Interpretation",
         ],
         "avoid_sections": [
             "Individual-blame framing",
@@ -226,7 +226,7 @@ AUDIENCE_SECTION_PLANS = {
             "Overly clinical or statistical language",
         ],
         "primary_visual_emphasis": (
-            "Local relevance, lived context, barriers and supports, resources, trust, and collective action."
+            "Local relevance, lived context, source-supported barriers/supports, and community interpretation."
         ),
         "chart_policy": (
             "Use simple evidence callouts or lightweight comparisons; avoid dense charts unless they directly "
@@ -236,11 +236,13 @@ AUDIENCE_SECTION_PLANS = {
         "language_policy": (
             "Accessible, warm, strengths-based language that avoids blaming individuals or communities. "
             "Emphasize only source-supported systems, access, trust, technology fit, resources, culturally responsive "
-            "support, and collective action. Prefer systems/access/trust/resource framing over individual behavior "
+            "support, and collective context. Prefer systems/access/trust/resource framing over individual behavior "
             "instructions. Do not name or imply specific barriers, programs, resources, transportation issues, cost issues, "
             "food access issues, or trusted messenger strategies unless the source explicitly supports them. Community "
-            "actions should stay generic and source-linked, such as 'design with community partners' or 'reduce access "
-            "barriers' only when supported. Use short labels and brief action phrases, not explanatory paragraphs."
+            "action/resource panels should appear only when the source describes interventions, resources, implementation, "
+            "or explicit recommendations; otherwise use a 'Community Interpretation' panel that explains what the finding "
+            "may mean for families, neighborhoods, or local conversations. Use short labels and brief phrases, not "
+            "explanatory paragraphs."
         ),
         "required_panel_title": "What This Means for Our Community",
     },

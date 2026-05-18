@@ -198,6 +198,7 @@ def retrieve_reference_notes(
     elif audience == "community":
         notes.append("Favor systems/access/trust framing, barriers/supports, and collective context.")
         notes.append("Name specific barriers or resources only when explicitly supported by the source; otherwise keep labels generic.")
+        notes.append("Use Community Interpretation instead of Community Actions/Resources unless the source includes interventions, resources, implementation, or explicit recommendations.")
     if visual_intent == "evidence summary with numeric callouts":
         notes.append("Make exact numeric evidence prominent only where source-supported.")
     elif visual_intent == "barriers and supports map":
@@ -270,6 +271,7 @@ Rules:
 - For clinical audiences, frame action panels as assessment, conversation, and source-informed planning rather than direct orders.
 - For patient audiences, keep text especially sparse: 3-4 main panels, 2-3 bullets per panel, and at most one simple evidence note.
 - For community audiences, do not name specific barriers, resources, services, transportation issues, cost issues, or messenger strategies unless they appear in the source excerpt or inferred profile.
+- For community audiences, do not force action/resource sections; choose Community Interpretation when the source only supports meaning or context.
 - Prefer "study suggests", "study shows", "may support", "can inform", or "is associated with" language for observational evidence.
 - Preserve normalized citation fields exactly when present in the inferred source profile.
 
