@@ -220,6 +220,7 @@ def build_infographic_prompt(
     logo_instructions_extra: str,
     chart_reference_block: str = "",
     inferred_profile: dict[str, str | list[str]] | None = None,
+    structured_brief_block: str = "",
 ) -> str:
     style = STYLES.get(style_id, STYLES["uab-craft-handmade"])
     audience_key = audience_key if audience_key in AUDIENCE_GUIDANCE else "patient"
@@ -271,6 +272,14 @@ def build_infographic_prompt(
         if isinstance(inferred_claim_pairs, list) and inferred_claim_pairs
         else "  - [No claim-evidence pairs inferred; only use directly sourced claims.]"
     )
+    structured_brief_section = ""
+    if structured_brief_block.strip():
+        structured_brief_section = f"""
+## Structured Visual Brief (EXPERIMENTAL PLANNER/STYLIST)
+{structured_brief_block.strip()}
+
+Use this structured visual brief as the intended visual plan for hierarchy, emphasis, section sequencing, and style execution. It is subordinate to source-grounding, exact chart/data rules, audience requirements, citation rules, and UAB footer/logo rules.
+"""
 
     user_goal = _compact_ws(user_context)
     if user_goal:
@@ -391,6 +400,7 @@ Use this structured chart summary to preserve chart intent and numeric fidelity:
 - Chart guidance: {inferred_chart_guidance or "[not inferred]"}
 - Non-numeric mode: {"ON" if inferred_non_numeric else "OFF"}
 - Normalized citation fields: title="{inferred_citation_title or '[not inferred]'}", journal="{inferred_citation_journal or '[not inferred]'}", year="{inferred_citation_year or '[not inferred]'}", authors="{inferred_citation_authors or '[not inferred]'}"
+{structured_brief_section}
 
 ## User-provided chart reference (from publications / uploads)
 {chart_reference_block if chart_reference_block.strip() else "[No chart figures or data files attached — use only Source Documents and user context for any numbers; do not invent statistics.]"}

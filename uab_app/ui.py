@@ -83,6 +83,11 @@ from uab_app.image_service import (
     user_friendly_error,
 )
 from uab_app.parsers import extract_document_text
+from uab_app.planning import (
+    build_structured_visual_brief,
+    format_structured_brief_for_prompt,
+    structured_brief_sha256,
+)
 from uab_app.prompts import build_infographic_prompt
 from uab_app.sanitize import injection_labels_for_ids, regex_cleanup_fallback, sanitize_input
 from uab_app.styles import STYLES
@@ -185,6 +190,12 @@ def init_session_state() -> None:
         st.session_state.last_effective_prompt_sha256 = ""
     if "last_inferred_profile" not in st.session_state:
         st.session_state.last_inferred_profile = {}
+    if "last_structured_brief" not in st.session_state:
+        st.session_state.last_structured_brief = ""
+    if "last_structured_brief_sha256" not in st.session_state:
+        st.session_state.last_structured_brief_sha256 = ""
+    if "last_structured_brief_warning" not in st.session_state:
+        st.session_state.last_structured_brief_warning = ""
     if "last_download_basename" not in st.session_state:
         st.session_state.last_download_basename = "infographic"
     if "refine_generate_now" not in st.session_state:
@@ -861,6 +872,7 @@ def main() -> None:
             publication_fidelity_mode = False
             expected_citation = ""
             preferred_terms: list[str] = []
+            structured_planning_enabled = False
             if experience_mode == "advanced":
                 with st.expander("Advanced generation settings", expanded=True):
                     size = st.selectbox(
@@ -889,6 +901,15 @@ def main() -> None:
                             key="preferred_terms_text",
                         )
                         preferred_terms = [x.strip() for x in terms_raw.split(",") if x.strip()]
+                    structured_planning_enabled = st.checkbox(
+                        "Use structured planning pipeline",
+                        value=False,
+                        key="structured_planning_enabled",
+                        help=(
+                            "Experimental PaperBanana-style planner/stylist brief. "
+                            "Uses the existing chat model before image generation; defaults off."
+                        ),
+                    )
 
             if experience_mode == "advanced":
                 phi_ok = st.checkbox(
@@ -1748,6 +1769,24 @@ def main() -> None:
             else:
                 st.caption("No inferred profile yet. Generate once to inspect inferred fields.")
 
+        with st.expander("Structured visual brief (last run)", expanded=False):
+            brief_txt = str(st.session_state.get("last_structured_brief", "") or "")
+            brief_hash = str(st.session_state.get("last_structured_brief_sha256", "") or "")
+            brief_warning = str(st.session_state.get("last_structured_brief_warning", "") or "")
+            if brief_warning:
+                st.warning(brief_warning)
+            if brief_txt:
+                st.caption(f"SHA-256: `{brief_hash}`")
+                st.text_area(
+                    "Planner/stylist brief",
+                    value=brief_txt,
+                    height=320,
+                    disabled=True,
+                    key="structured_visual_brief_preview",
+                )
+            else:
+                st.caption("No structured brief yet. Enable structured planning and generate once to inspect it.")
+
     credential_issue = ""
     if hide_api_config:
         key_val = os.environ.get("AZURE_OPENAI_API_KEY", "")
@@ -1983,8 +2022,69 @@ def main() -> None:
             st.session_state.last_chart_reference_block = gen_ref_block
 
             refinement = str(st.session_state.get("refinement_notes", "") or "")
+            structured_brief_by_key: dict[tuple[str, str], str] = {}
+            structured_brief_hash_by_key: dict[tuple[str, str], str] = {}
+            st.session_state.last_structured_brief = ""
+            st.session_state.last_structured_brief_sha256 = ""
+            st.session_state.last_structured_brief_warning = ""
+
+            if structured_planning_enabled:
+                set_progress(progress_bar, status_label, "Building structured visual brief", 0.50)
+                plan_targets: list[tuple[str, str, dict[str, Any]]] = []
+                if mode == "audiences":
+                    plan_targets = [
+                        (
+                            selected_style_key,
+                            aud_key,
+                            inferred_profiles.get(aud_key, inferred_profile),
+                        )
+                        for aud_key in AUDIENCE_KEYS
+                    ]
+                elif mode == "compare":
+                    plan_targets = [
+                        (style_id, audience, inferred_profile) for style_id in styles_to_run
+                    ]
+                else:
+                    plan_targets = [(selected_style_key, audience, inferred_profile)]
+
+                planning_errors: list[str] = []
+                for style_id, aud_key, profile_for_brief in plan_targets:
+                    try:
+                        brief = build_structured_visual_brief(
+                            client,
+                            chat_model,
+                            user_context=sanitized_context,
+                            cleaned_document_texts=cleaned_docs,
+                            audience=aud_key,
+                            style_id=style_id,
+                            inferred_profile=profile_for_brief,
+                            chart_reference_block=gen_ref_block,
+                            refinement_notes=refinement,
+                        )
+                        brief_block = format_structured_brief_for_prompt(brief)
+                        brief_hash = structured_brief_sha256(brief_block)
+                        structured_brief_by_key[(style_id, aud_key)] = brief_block
+                        structured_brief_hash_by_key[(style_id, aud_key)] = brief_hash
+                    except Exception as exc:
+                        planning_errors.append(
+                            f"{style_id}/{aud_key}: {exc.__class__.__name__}"
+                        )
+
+                if structured_brief_by_key:
+                    first_key = next(iter(structured_brief_by_key))
+                    st.session_state.last_structured_brief = structured_brief_by_key[first_key]
+                    st.session_state.last_structured_brief_sha256 = structured_brief_hash_by_key.get(first_key, "")
+                if planning_errors:
+                    msg = (
+                        "Structured planning failed for some targets; those generations will use the standard prompt path. "
+                        + "; ".join(planning_errors[:4])
+                    )
+                    st.session_state.last_structured_brief_warning = msg
+                    st.warning(msg)
 
             def run_single_style(style_id: str, store_prompt: bool) -> dict[str, Any]:
+                brief_block = structured_brief_by_key.get((style_id, audience), "")
+                brief_hash = structured_brief_hash_by_key.get((style_id, audience), "")
                 prompt = build_infographic_prompt(
                     style_id,
                     sanitized_context,
@@ -1994,6 +2094,7 @@ def main() -> None:
                     logo_extra,
                     chart_reference_block=gen_ref_block,
                     inferred_profile=inferred_profile,
+                    structured_brief_block=brief_block,
                 )
                 if provider == "azure":
                     max_prompt_len = (
@@ -2084,6 +2185,7 @@ def main() -> None:
                         "style_key": style_id,
                         "bytes": raw_bytes,
                         "prompt_len": len(prompt),
+                        "structured_brief_sha256": brief_hash,
                     }
                     latency = int((time.perf_counter() - t_req) * 1000)
                     audit_log(
@@ -2094,6 +2196,10 @@ def main() -> None:
                         True,
                         latency,
                         "image_generation_compare" if mode == "compare" else "image_generation",
+                        {
+                            "structured_planning_enabled": structured_planning_enabled,
+                            "structured_brief_sha256": brief_hash,
+                        },
                     )
                     return out
                 except BaseException as exc:
@@ -2106,7 +2212,11 @@ def main() -> None:
                         False,
                         latency,
                         "image_generation",
-                        {"error_kind": exc.__class__.__name__},
+                        {
+                            "error_kind": exc.__class__.__name__,
+                            "structured_planning_enabled": structured_planning_enabled,
+                            "structured_brief_sha256": brief_hash,
+                        },
                     )
                     raise
 
@@ -2116,6 +2226,8 @@ def main() -> None:
                 def audience_worker(aud_key: str) -> dict[str, Any]:
                     style_id = selected_style_key
                     profile = inferred_profiles.get(aud_key, inferred_profile)
+                    brief_block = structured_brief_by_key.get((style_id, aud_key), "")
+                    brief_hash = structured_brief_hash_by_key.get((style_id, aud_key), "")
                     prompt = build_infographic_prompt(
                         style_id,
                         sanitized_context,
@@ -2125,6 +2237,7 @@ def main() -> None:
                         logo_extra,
                         chart_reference_block=gen_ref_block,
                         inferred_profile=profile,
+                        structured_brief_block=brief_block,
                     )
                     if provider == "azure":
                         max_prompt_len = (
@@ -2160,6 +2273,10 @@ def main() -> None:
                             True,
                             latency,
                             "image_generation_audience_contact_sheet",
+                            {
+                                "structured_planning_enabled": structured_planning_enabled,
+                                "structured_brief_sha256": brief_hash,
+                            },
                         )
                         return {
                             "style_key": style_id,
@@ -2167,6 +2284,7 @@ def main() -> None:
                             "bytes": raw_bytes,
                             "prompt_len": len(prompt),
                             "prompt_sha256": prompt_sha,
+                            "structured_brief_sha256": brief_hash,
                             "source_docs_sha256": source_docs_sha,
                             "download_basename": download_basename_from_profile(
                                 profile,
@@ -2183,7 +2301,11 @@ def main() -> None:
                             False,
                             latency,
                             "image_generation_audience_contact_sheet",
-                            {"error_kind": exc.__class__.__name__},
+                            {
+                                "error_kind": exc.__class__.__name__,
+                                "structured_planning_enabled": structured_planning_enabled,
+                                "structured_brief_sha256": brief_hash,
+                            },
                         )
                         raise
 
@@ -2243,6 +2365,8 @@ def main() -> None:
                 set_progress(progress_bar, status_label, "Submitting to API (3 parallel)", 0.55)
 
                 def parallel_worker(sid: str) -> dict[str, Any]:
+                    brief_block = structured_brief_by_key.get((sid, audience), "")
+                    brief_hash = structured_brief_hash_by_key.get((sid, audience), "")
                     prompt = build_infographic_prompt(
                         sid,
                         sanitized_context,
@@ -2252,6 +2376,7 @@ def main() -> None:
                         logo_extra,
                         chart_reference_block=gen_ref_block,
                         inferred_profile=inferred_profile,
+                        structured_brief_block=brief_block,
                     )
                     if provider == "azure":
                         max_prompt_len = (
@@ -2287,12 +2412,17 @@ def main() -> None:
                             True,
                             latency,
                             "image_generation_compare",
+                            {
+                                "structured_planning_enabled": structured_planning_enabled,
+                                "structured_brief_sha256": brief_hash,
+                            },
                         )
                         return {
                             "style_key": sid,
                             "bytes": raw_bytes,
                             "prompt_len": len(prompt),
                             "prompt_sha256": prompt_sha,
+                            "structured_brief_sha256": brief_hash,
                             "source_docs_sha256": source_docs_sha,
                             "download_basename": download_basename_from_profile(
                                 inferred_profile,
@@ -2309,7 +2439,11 @@ def main() -> None:
                             False,
                             latency,
                             "image_generation",
-                            {"error_kind": exc.__class__.__name__},
+                            {
+                                "error_kind": exc.__class__.__name__,
+                                "structured_planning_enabled": structured_planning_enabled,
+                                "structured_brief_sha256": brief_hash,
+                            },
                         )
                         raise
 
@@ -2381,6 +2515,7 @@ def main() -> None:
                     "source_excerpt": "\n\n".join(cleaned_docs) if cleaned_docs else "",
                     "chart_reference_excerpt": gen_ref_block or "",
                     "refinement_notes_used": refinement or "",
+                    "structured_brief_excerpt": structured_brief_by_key.get((_sk, audience), ""),
                     "effective_prompt_excerpt": str(
                         st.session_state.get("last_effective_prompt") or ""
                     ),
