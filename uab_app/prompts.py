@@ -154,10 +154,14 @@ def _format_audience_hard_constraints(audience_key: str) -> str:
         "community": [
             "Prefer systems, access, trust, technology fit, resources, and culturally responsive support over "
             "individual behavior instructions.",
+            "Use Barriers/Supports only when the source explicitly studies barriers, facilitators, access, "
+            "implementation, resources, or qualitative/community context.",
+            "If those concepts are not source-supported, replace Barriers/Supports with Community Lens or Shared Takeaway.",
             "Do not force a Community Actions/Resources panel. If the source does not describe interventions, resources, "
             "implementation steps, or explicit recommendations, use Community Interpretation instead.",
             "Community actions should appear only when source-supported and should stay generic unless a specific program "
             "or resource is named in the source.",
+            "Do not generate 'factors that make it harder' unless those factors are named in the source.",
             "Do not imply specific local programs, resources, services, or availability unless named in the source.",
             "Do not name specific barriers such as transportation, cost, food access, time constraints, or trusted "
             "messengers unless those exact concepts are present in the source.",

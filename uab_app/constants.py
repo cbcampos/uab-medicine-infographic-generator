@@ -217,8 +217,8 @@ AUDIENCE_SECTION_PLANS = {
             "Why This Matters Here",
             "Community Context",
             "What We Learned",
-            "Barriers/Supports",
-            "Community Interpretation",
+            "Community Lens",
+            "Shared Takeaway",
         ],
         "avoid_sections": [
             "Individual-blame framing",
@@ -226,7 +226,7 @@ AUDIENCE_SECTION_PLANS = {
             "Overly clinical or statistical language",
         ],
         "primary_visual_emphasis": (
-            "Local relevance, lived context, source-supported barriers/supports, and community interpretation."
+            "Local relevance, lived context, source-grounded community lens, and shared takeaway."
         ),
         "chart_policy": (
             "Use simple evidence callouts or lightweight comparisons; avoid dense charts unless they directly "
@@ -238,11 +238,12 @@ AUDIENCE_SECTION_PLANS = {
             "Emphasize only source-supported systems, access, trust, technology fit, resources, culturally responsive "
             "support, and collective context. Prefer systems/access/trust/resource framing over individual behavior "
             "instructions. Do not name or imply specific barriers, programs, resources, transportation issues, cost issues, "
-            "food access issues, or trusted messenger strategies unless the source explicitly supports them. Community "
-            "action/resource panels should appear only when the source describes interventions, resources, implementation, "
-            "or explicit recommendations; otherwise use a 'Community Interpretation' panel that explains what the finding "
-            "may mean for families, neighborhoods, or local conversations. Use short labels and brief phrases, not "
-            "explanatory paragraphs."
+            "food access issues, or trusted messenger strategies unless the source explicitly supports them. Use "
+            "Barriers/Supports only when the source explicitly studies barriers, facilitators, access, implementation, "
+            "resources, or qualitative/community context. Do not generate 'factors that make it harder' unless those "
+            "factors are named in the source. Otherwise use Community Lens or Shared Takeaway panels that explain only "
+            "what the finding may mean for families, neighborhoods, or local conversations. Use short labels and brief "
+            "phrases, not explanatory paragraphs."
         ),
         "required_panel_title": "What This Means for Our Community",
     },
