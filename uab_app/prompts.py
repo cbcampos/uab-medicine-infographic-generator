@@ -430,6 +430,8 @@ Use this structured chart summary to preserve chart intent and numeric fidelity:
 - Every major claim in the infographic MUST map to source evidence.
 - For each major claim, include a concise evidence anchor in text (statistic, quote phrase, or cited finding).
 - If evidence for a claim is not present in source/user context, do NOT include the claim.
+- Do NOT turn observational findings into direct clinical advice, patient behavior instructions, community resource recommendations, or intervention recommendations unless the source explicitly recommends those actions.
+- For implications, prefer restrained framing such as "study suggests", "study shows", "may support", "can inform", or "is associated with" when action language is not directly source-supported.
 - Do NOT add demographic percentages, age, sample characteristics, participant descriptors, location details, deprivation indices, food insecurity rates, subgroup details, or other study descriptors unless those exact details are present in the source/user context.
 - Preferred claim-evidence anchors:
 {claim_anchor_block}
@@ -446,6 +448,8 @@ Use this structured chart summary to preserve chart intent and numeric fidelity:
 - Include one citation footer block using this exact normalized format:
   "Source: {inferred_citation_authors or '[Authors]'} ({inferred_citation_year or '[Year]'}). {inferred_citation_title or '[Title]'}. {inferred_citation_journal or '[Journal]'}."
 - If any field is missing, keep the placeholder label instead of inventing details.
+- Do NOT rewrite, shorten, rename, or substitute the authors, year, title, or journal in the source footer.
+- Do NOT use alternate titles or journals elsewhere in the image that conflict with the normalized citation fields.
 
 ## HARD CONSTRAINT: Non-Numeric Source Handling
 - If NON_NUMERIC_MODE is ON, do NOT generate quantitative charts, effect-size plots, CI bars, p-values, or fabricated numbers.

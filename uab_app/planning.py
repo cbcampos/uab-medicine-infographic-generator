@@ -26,6 +26,7 @@ class StructuredVisualBrief:
     chart_or_diagram_candidates: list[str] = field(default_factory=list)
     avoid_items: list[str] = field(default_factory=list)
     style_translation: list[str] = field(default_factory=list)
+    citation_lock: str = ""
     critic_contract: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -79,6 +80,7 @@ def _brief_from_obj(obj: dict[str, Any]) -> StructuredVisualBrief:
         chart_or_diagram_candidates=_clean_list(obj.get("chart_or_diagram_candidates"), 6),
         avoid_items=_clean_list(obj.get("avoid_items"), 8),
         style_translation=_clean_list(obj.get("style_translation"), 8),
+        citation_lock=str(obj.get("citation_lock") or "").strip()[:260],
         critic_contract=_clean_list(obj.get("critic_contract"), 8),
     )
 
@@ -128,6 +130,7 @@ Return exactly this JSON object shape:
   "chart_or_diagram_candidates": ["supported visual idea ..."],
   "avoid_items": ["unsupported or audience-inappropriate item ..."],
   "style_translation": ["style-specific instruction tied to the selected UAB style ..."],
+  "citation_lock": "exact source footer fields to preserve, or empty string",
   "critic_contract": ["check the final image for ..."]
 }}
 
@@ -136,6 +139,10 @@ Rules:
 - Preserve exact numbers only if present below.
 - Prefer scannability: 4-6 panels, short bullets, strong hierarchy.
 - Style translation must use the selected UAB style, not a generic academic poster style.
+- Preserve normalized citation fields exactly when present in the inferred source profile; never rename authors, title, journal, or year.
+- Keep academic numeric evidence prominent when supported by exact source values.
+- For clinical/patient/community audiences, frame implications as source-grounded interpretation. Do not introduce new care recommendations, resource recommendations, intervention recommendations, or behavior instructions unless the source explicitly supports them.
+- Prefer "study suggests", "study shows", "may support", or "can inform" language over direct recommendations when evidence is observational or when the source does not prescribe action.
 - Critic contract should be actionable for later vision review.
 - Footer/logo rules are handled elsewhere; do not mention logo placement.
 
@@ -198,6 +205,9 @@ def format_structured_brief_for_prompt(brief: StructuredVisualBrief | dict[str, 
         parts.append(f"Core message: {core}")
     if objective:
         parts.append(f"Audience objective: {objective}")
+    citation_lock = str(data.get("citation_lock") or "").strip()
+    if citation_lock:
+        parts.append(f"Citation lock: {citation_lock}")
     for label, key in (
         ("Intended sections", "intended_sections"),
         ("Visual hierarchy", "visual_hierarchy"),

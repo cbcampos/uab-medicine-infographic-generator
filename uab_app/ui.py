@@ -342,6 +342,30 @@ def png_filename(base: str, *parts: str) -> str:
     return f"{stem}-{suffix}.png" if suffix else f"{stem}.png"
 
 
+def lock_citation_fields_across_profiles(
+    profiles: dict[str, dict[str, Any]],
+    source_key: str = "academic",
+) -> dict[str, dict[str, Any]]:
+    """Keep citation/title/journal/year fields consistent in all-audience runs."""
+    if not profiles:
+        return profiles
+    source = profiles.get(source_key) or next(iter(profiles.values()))
+    citation_keys = (
+        "citation_title",
+        "citation_journal",
+        "citation_year",
+        "citation_authors_short",
+        "citation_footer",
+    )
+    locked = {k: source.get(k) for k in citation_keys if str(source.get(k) or "").strip()}
+    if not locked:
+        return profiles
+    for profile in profiles.values():
+        for key, value in locked.items():
+            profile[key] = value
+    return profiles
+
+
 def render_generation_placeholder(slot: Any, title: str = "Generating image...") -> None:
     """Render an animated placeholder where the final image will appear."""
     slot.markdown(
@@ -1987,6 +2011,7 @@ def main() -> None:
                         audience=aud_key,
                     )
                     inferred_profiles[aud_key] = source_profile_to_dict(inferred)
+                inferred_profiles = lock_citation_fields_across_profiles(inferred_profiles)
                 inferred_profile = inferred_profiles["academic"]
                 st.session_state.last_inferred_profile = inferred_profiles
                 st.session_state.last_download_basename = download_basename_from_profile(
