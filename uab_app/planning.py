@@ -191,10 +191,13 @@ def retrieve_reference_notes(
         notes.append("Favor evidence hierarchy, methods/results structure, and exact supported values.")
     elif audience == "clinical":
         notes.append("Favor decision relevance, population/outcome framing, and restrained care implications.")
+        notes.append("Practice language should emphasize assessment and discussion, not directives, unless the source recommends action.")
     elif audience == "patient":
         notes.append("Favor plain-language takeaways, care-team conversation prompts, and low text density.")
+        notes.append("Use one short 'study found' evidence note; avoid repeated beta/p-value parentheticals in patient panels.")
     elif audience == "community":
         notes.append("Favor systems/access/trust framing, barriers/supports, and collective context.")
+        notes.append("Name specific barriers or resources only when explicitly supported by the source; otherwise keep labels generic.")
     if visual_intent == "evidence summary with numeric callouts":
         notes.append("Make exact numeric evidence prominent only where source-supported.")
     elif visual_intent == "barriers and supports map":
@@ -264,6 +267,9 @@ Rules:
 - Preserve exact numbers only if present below.
 - Keep academic numeric evidence prominent when supported by exact values.
 - Keep clinical/patient/community implications restrained unless source-supported.
+- For clinical audiences, frame action panels as assessment, conversation, and source-informed planning rather than direct orders.
+- For patient audiences, keep text especially sparse: 3-4 main panels, 2-3 bullets per panel, and at most one simple evidence note.
+- For community audiences, do not name specific barriers, resources, services, transportation issues, cost issues, or messenger strategies unless they appear in the source excerpt or inferred profile.
 - Prefer "study suggests", "study shows", "may support", "can inform", or "is associated with" language for observational evidence.
 - Preserve normalized citation fields exactly when present in the inferred source profile.
 
@@ -352,6 +358,7 @@ Rules:
 - Preserve the Planner's intended sections, visual hierarchy, claim-evidence anchors, and citation lock.
 - Use the selected UAB style; do not drift into a generic poster style.
 - Keep text scannable and reduce paragraph blocks.
+- For patient and community audiences, favor larger type, fewer words, and simpler section bodies over dense explanatory detail.
 - Footer/logo rules are handled elsewhere; do not mention logo placement.
 """.strip()
 

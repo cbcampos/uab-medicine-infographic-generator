@@ -140,12 +140,16 @@ def _format_audience_hard_constraints(audience_key: str) -> str:
             "Clinical population context may include only source-confirmed sample descriptors.",
             "Do not invent demographic percentages, age, food insecurity, deprivation index, risk scores, "
             "clinical measurements, or subgroup details.",
+            "Frame practice implications as assessment, discussion, and source-informed planning unless the source "
+            "explicitly recommends an action.",
         ],
         "patient": [
             "Avoid titles or bullets that promise disease management outcomes.",
             "Use 'may help', 'can help when', and care-team support framing instead of guaranteeing benefit.",
             "Do not tell viewers to simply try harder, give tools more time, or rely on willpower; emphasize fit, "
             "support, and asking the care team for help.",
+            "Use at most one short plain-language evidence note; do not repeat statistical parentheticals across panels.",
+            "Use simple labels such as 'Sugary Drinks' rather than long or awkward section titles.",
         ],
         "community": [
             "Prefer systems, access, trust, technology fit, resources, and culturally responsive support over "
@@ -153,6 +157,8 @@ def _format_audience_hard_constraints(audience_key: str) -> str:
             "Community actions should be program/system design actions such as designing with community partners, "
             "reducing access barriers, supporting trusted messengers, and offering flexible low-burden options.",
             "Do not imply specific local programs, resources, services, or availability unless named in the source.",
+            "Do not name specific barriers such as transportation, cost, food access, time constraints, or trusted "
+            "messengers unless those exact concepts are present in the source.",
             "Avoid individual-blame framing and avoid making community members responsible for solving structural barriers alone.",
         ],
     }

@@ -174,9 +174,10 @@ AUDIENCE_SECTION_PLANS = {
         ),
         "language_policy": (
             "Use clear clinical terminology for health professionals. Frame implications as care-team "
-            "assessment, shared planning, burden reduction, and follow-up support. Population context may "
-            "include only source-confirmed descriptors; do not invent demographic percentages, age, food "
-            "insecurity, deprivation index, or clinical measurements. Keep bullets short and action-oriented."
+            "assessment, source-informed conversations, and shared planning rather than prescriptive orders. "
+            "Population context may include only source-confirmed descriptors; do not invent demographic "
+            "percentages, age, food insecurity, deprivation index, or clinical measurements. Keep bullets short, "
+            "restrained, and evidence-linked."
         ),
         "required_panel_title": "What This Means for Care",
     },
@@ -198,16 +199,16 @@ AUDIENCE_SECTION_PLANS = {
             "Large plain-language takeaways, friendly icons, simple steps, and care-team conversation prompts."
         ),
         "chart_policy": (
-            "Avoid technical charts unless essential; translate supported statistics into simple callouts "
-            "while preserving exact numbers. Do not show device readings, percentages, or measurements "
-            "unless those exact values appear in the source."
+            "Avoid technical charts unless essential. For most patient graphics, use one plain-language "
+            "'study found' evidence note instead of repeated statistical parentheticals. Do not show device "
+            "readings, percentages, or measurements unless those exact values appear in the source."
         ),
         "language_policy": (
             "Plain language around an 8th-grade reading level; encouraging, choice-centered, and not medical advice. "
             "Use 'may help' language and remind viewers they can ask their care team for a plan that fits their life. "
             "Avoid titles or bullets that promise disease management outcomes; frame support as something that can "
-            "be easier when tools fit the person's life and support is available. Use very short plain-language phrases "
-            "and no paragraph blocks."
+            "be easier when tools fit the person's life and support is available. Use very short plain-language phrases, "
+            "no paragraph blocks, no dense evidence parentheticals, and no more than 2-3 bullets per section."
         ),
         "required_panel_title": "What This Means for You",
     },
@@ -234,11 +235,12 @@ AUDIENCE_SECTION_PLANS = {
         ),
         "language_policy": (
             "Accessible, warm, strengths-based language that avoids blaming individuals or communities. "
-            "Emphasize systems, access, trust, technology fit, resources, culturally responsive support, and collective action. "
-            "Prefer systems/access/trust/resource framing over individual behavior instructions, and do not imply specific "
-            "local programs or resources unless they are named in the source. Community actions should be program/system "
-            "design actions such as designing with community partners, reducing access barriers, supporting trusted messengers, "
-            "and offering flexible low-burden options. Use short labels and brief action phrases, not explanatory paragraphs."
+            "Emphasize only source-supported systems, access, trust, technology fit, resources, culturally responsive "
+            "support, and collective action. Prefer systems/access/trust/resource framing over individual behavior "
+            "instructions. Do not name or imply specific barriers, programs, resources, transportation issues, cost issues, "
+            "food access issues, or trusted messenger strategies unless the source explicitly supports them. Community "
+            "actions should stay generic and source-linked, such as 'design with community partners' or 'reduce access "
+            "barriers' only when supported. Use short labels and brief action phrases, not explanatory paragraphs."
         ),
         "required_panel_title": "What This Means for Our Community",
     },
