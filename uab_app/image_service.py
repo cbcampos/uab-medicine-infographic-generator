@@ -558,7 +558,13 @@ def run_refinements_scan_vision(
         scan_context.get("source_excerpt", "")[:12000],
         "## Chart reference excerpt (if any)",
         scan_context.get("chart_reference_excerpt", "")[:8000],
-        "## Structured visual brief (if enabled)",
+        "## Retrieved reference notes (if structured planning enabled)",
+        scan_context.get("retrieved_reference_notes", "")[:4000],
+        "## Planner brief (if structured planning enabled)",
+        scan_context.get("planner_brief_excerpt", "")[:6000],
+        "## Stylist brief (if structured planning enabled)",
+        scan_context.get("stylist_brief_excerpt", "")[:6000],
+        "## Combined structured visual brief (if enabled)",
         scan_context.get("structured_brief_excerpt", "")[:8000],
         "## Refinement notes used for this generation",
         scan_context.get("refinement_notes_used", "")[:4000],
@@ -569,7 +575,7 @@ def run_refinements_scan_vision(
         "You are a strict reviewer of an audience-specific medical/research infographic image.\n"
         "Read the attached infographic image carefully.\n"
         "Compare what is VISUALLY shown (headings, bullets, numbers, charts) to the user intent, "
-        "source excerpt, audience plan, and structured visual brief above.\n"
+        "source excerpt, audience plan, retrieved reference notes, Planner brief, and Stylist brief above.\n"
         "Flag missing required elements, missing expected audience panel title, wrong emphasis, audience mismatch, illegible text, clutter, "
         "duplicated or conflicting numbers, and any numbers/claims that are not supported by the excerpt.\n"
         "Ignore the bottom-right corner: a real logo may be composited there by the app; do not grade "

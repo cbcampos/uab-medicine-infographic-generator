@@ -275,7 +275,7 @@ def build_infographic_prompt(
     structured_brief_section = ""
     if structured_brief_block.strip():
         structured_brief_section = f"""
-## Structured Visual Brief (EXPERIMENTAL PLANNER/STYLIST)
+## Structured Visual Brief (EXPERIMENTAL RETRIEVER/PLANNER/STYLIST)
 {structured_brief_block.strip()}
 
 Use this structured visual brief as the intended visual plan for hierarchy, emphasis, section sequencing, and style execution. It is subordinate to source-grounding, exact chart/data rules, audience requirements, citation rules, and UAB footer/logo rules.

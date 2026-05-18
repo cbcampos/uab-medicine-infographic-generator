@@ -85,7 +85,10 @@ from uab_app.image_service import (
 from uab_app.parsers import extract_document_text
 from uab_app.planning import (
     build_structured_visual_brief,
+    format_planner_brief,
+    format_retrieved_reference_notes,
     format_structured_brief_for_prompt,
+    format_stylist_brief,
     structured_brief_sha256,
 )
 from uab_app.prompts import build_infographic_prompt
@@ -192,6 +195,12 @@ def init_session_state() -> None:
         st.session_state.last_inferred_profile = {}
     if "last_structured_brief" not in st.session_state:
         st.session_state.last_structured_brief = ""
+    if "last_retrieved_reference_notes" not in st.session_state:
+        st.session_state.last_retrieved_reference_notes = ""
+    if "last_planner_brief" not in st.session_state:
+        st.session_state.last_planner_brief = ""
+    if "last_stylist_brief" not in st.session_state:
+        st.session_state.last_stylist_brief = ""
     if "last_structured_brief_sha256" not in st.session_state:
         st.session_state.last_structured_brief_sha256 = ""
     if "last_structured_brief_warning" not in st.session_state:
@@ -1793,7 +1802,10 @@ def main() -> None:
             else:
                 st.caption("No inferred profile yet. Generate once to inspect inferred fields.")
 
-        with st.expander("Structured visual brief (last run)", expanded=False):
+        with st.expander("Structured pipeline details (last run)", expanded=False):
+            retrieved_txt = str(st.session_state.get("last_retrieved_reference_notes", "") or "")
+            planner_txt = str(st.session_state.get("last_planner_brief", "") or "")
+            stylist_txt = str(st.session_state.get("last_stylist_brief", "") or "")
             brief_txt = str(st.session_state.get("last_structured_brief", "") or "")
             brief_hash = str(st.session_state.get("last_structured_brief_sha256", "") or "")
             brief_warning = str(st.session_state.get("last_structured_brief_warning", "") or "")
@@ -1802,7 +1814,28 @@ def main() -> None:
             if brief_txt:
                 st.caption(f"SHA-256: `{brief_hash}`")
                 st.text_area(
-                    "Planner/stylist brief",
+                    "Retrieved reference notes",
+                    value=retrieved_txt,
+                    height=160,
+                    disabled=True,
+                    key="structured_reference_notes_preview",
+                )
+                st.text_area(
+                    "Planner brief",
+                    value=planner_txt,
+                    height=260,
+                    disabled=True,
+                    key="structured_planner_brief_preview",
+                )
+                st.text_area(
+                    "Stylist brief",
+                    value=stylist_txt,
+                    height=260,
+                    disabled=True,
+                    key="structured_stylist_brief_preview",
+                )
+                st.text_area(
+                    "Combined prompt block",
                     value=brief_txt,
                     height=320,
                     disabled=True,
@@ -2049,7 +2082,13 @@ def main() -> None:
             refinement = str(st.session_state.get("refinement_notes", "") or "")
             structured_brief_by_key: dict[tuple[str, str], str] = {}
             structured_brief_hash_by_key: dict[tuple[str, str], str] = {}
+            structured_reference_by_key: dict[tuple[str, str], str] = {}
+            structured_planner_by_key: dict[tuple[str, str], str] = {}
+            structured_stylist_by_key: dict[tuple[str, str], str] = {}
             st.session_state.last_structured_brief = ""
+            st.session_state.last_retrieved_reference_notes = ""
+            st.session_state.last_planner_brief = ""
+            st.session_state.last_stylist_brief = ""
             st.session_state.last_structured_brief_sha256 = ""
             st.session_state.last_structured_brief_warning = ""
 
@@ -2090,6 +2129,9 @@ def main() -> None:
                         brief_hash = structured_brief_sha256(brief_block)
                         structured_brief_by_key[(style_id, aud_key)] = brief_block
                         structured_brief_hash_by_key[(style_id, aud_key)] = brief_hash
+                        structured_reference_by_key[(style_id, aud_key)] = format_retrieved_reference_notes(brief)
+                        structured_planner_by_key[(style_id, aud_key)] = format_planner_brief(brief)
+                        structured_stylist_by_key[(style_id, aud_key)] = format_stylist_brief(brief)
                     except Exception as exc:
                         planning_errors.append(
                             f"{style_id}/{aud_key}: {exc.__class__.__name__}"
@@ -2099,6 +2141,9 @@ def main() -> None:
                     first_key = next(iter(structured_brief_by_key))
                     st.session_state.last_structured_brief = structured_brief_by_key[first_key]
                     st.session_state.last_structured_brief_sha256 = structured_brief_hash_by_key.get(first_key, "")
+                    st.session_state.last_retrieved_reference_notes = structured_reference_by_key.get(first_key, "")
+                    st.session_state.last_planner_brief = structured_planner_by_key.get(first_key, "")
+                    st.session_state.last_stylist_brief = structured_stylist_by_key.get(first_key, "")
                 if planning_errors:
                     msg = (
                         "Structured planning failed for some targets; those generations will use the standard prompt path. "
@@ -2540,6 +2585,9 @@ def main() -> None:
                     "source_excerpt": "\n\n".join(cleaned_docs) if cleaned_docs else "",
                     "chart_reference_excerpt": gen_ref_block or "",
                     "refinement_notes_used": refinement or "",
+                    "retrieved_reference_notes": structured_reference_by_key.get((_sk, audience), ""),
+                    "planner_brief_excerpt": structured_planner_by_key.get((_sk, audience), ""),
+                    "stylist_brief_excerpt": structured_stylist_by_key.get((_sk, audience), ""),
                     "structured_brief_excerpt": structured_brief_by_key.get((_sk, audience), ""),
                     "effective_prompt_excerpt": str(
                         st.session_state.get("last_effective_prompt") or ""
