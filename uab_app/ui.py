@@ -1866,7 +1866,7 @@ def main() -> None:
 
     generate_btn = False
     step3_title = "Step 3: Generate"
-    with st.expander(step3_title, expanded=(experience_mode == "basic" or step3_open)):
+    with st.expander(step3_title, expanded=True):
         if experience_mode == "basic":
             st.markdown(
                 "<div style='border:1px solid #d9e8e2;border-radius:12px;padding:14px;background:#f7fbf9'>"
