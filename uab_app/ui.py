@@ -2382,7 +2382,7 @@ def main() -> None:
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     futs = [pool.submit(audience_worker, aud_key) for aud_key in AUDIENCE_KEYS]
                     t0_wait = time.perf_counter()
-                    target_seconds = 180
+                    target_seconds = 720
                     while True:
                         done_count = sum(1 for f in futs if f.done())
                         if done_count == len(futs):
@@ -2397,11 +2397,11 @@ def main() -> None:
                             status_label.markdown(
                                 "**Progress:** Cleaning document text → Building prompt → Submitting to API "
                                 "→ Fetching image → Displaying  \n"
-                                f"**Current:** Generating 4 audiences in parallel ({done_count}/4 done, {mm:02d}:{ss:02d} / 03:00)"
+                                f"**Current:** Generating 4 audiences in parallel ({done_count}/4 done, {mm:02d}:{ss:02d} / 12:00)"
                             )
                             timer_slot.info(
                                 f"Rendering 4 audiences in parallel: {done_count}/4 complete, "
-                                f"{mm:02d}:{ss:02d} elapsed (target ~03:00)."
+                                f"{mm:02d}:{ss:02d} elapsed (target ~12:00)."
                             )
                         else:
                             status_label.markdown(
