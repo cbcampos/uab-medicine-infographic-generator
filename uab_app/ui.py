@@ -2013,6 +2013,38 @@ def main() -> None:
 
             set_progress(progress_bar, status_label, "Inferring objective/topic", 0.40)
 
+            def run_llm_stage_with_live_timer(
+                *,
+                stage_name: str,
+                detail: str,
+                progress_value: float,
+                fn: Any,
+            ) -> Any:
+                result_holder: dict[str, Any] = {"value": None, "error": None}
+
+                def _worker() -> None:
+                    try:
+                        result_holder["value"] = fn()
+                    except BaseException as ex:
+                        result_holder["error"] = ex
+
+                stage_started = time.perf_counter()
+                worker = threading.Thread(target=_worker, daemon=True)
+                worker.start()
+                while worker.is_alive():
+                    elapsed = int(time.perf_counter() - stage_started)
+                    mm = elapsed // 60
+                    ss = elapsed % 60
+                    set_progress(progress_bar, status_label, stage_name, progress_value)
+                    timer_slot.info(
+                        f"{stage_name}: {detail} ({mm:02d}:{ss:02d} elapsed)"
+                    )
+                    time.sleep(1)
+                worker.join()
+                if result_holder["error"] is not None:
+                    raise result_holder["error"]
+                return result_holder["value"]
+
             def source_profile_to_dict(inferred: Any) -> dict[str, Any]:
                 return {
                     "topic": inferred.topic,
@@ -2034,14 +2066,19 @@ def main() -> None:
 
             inferred_profiles: dict[str, dict[str, Any]] = {}
             if mode == "audiences":
-                for aud_key in AUDIENCE_KEYS:
-                    inferred = infer_source_profile_llm(
-                        client=client,
-                        provider=provider,
-                        chat_model=chat_model,
-                        user_context=sanitized_context,
-                        cleaned_document_texts=cleaned_docs,
-                        audience=aud_key,
+                for idx, aud_key in enumerate(AUDIENCE_KEYS, start=1):
+                    inferred = run_llm_stage_with_live_timer(
+                        stage_name="Inferring source profile",
+                        detail=f"{idx}/4 audiences · {AUDIENCE_LABELS.get(aud_key, aud_key)}",
+                        progress_value=0.35 + (0.10 * ((idx - 1) / max(len(AUDIENCE_KEYS), 1))),
+                        fn=lambda aud_key=aud_key: infer_source_profile_llm(
+                            client=client,
+                            provider=provider,
+                            chat_model=chat_model,
+                            user_context=sanitized_context,
+                            cleaned_document_texts=cleaned_docs,
+                            audience=aud_key,
+                        ),
                     )
                     inferred_profiles[aud_key] = source_profile_to_dict(inferred)
                 inferred_profiles = lock_citation_fields_across_profiles(inferred_profiles)
@@ -2052,13 +2089,18 @@ def main() -> None:
                     sanitized_context,
                 )
             else:
-                inferred = infer_source_profile_llm(
-                    client=client,
-                    provider=provider,
-                    chat_model=chat_model,
-                    user_context=sanitized_context,
-                    cleaned_document_texts=cleaned_docs,
-                    audience=audience,
+                inferred = run_llm_stage_with_live_timer(
+                    stage_name="Inferring source profile",
+                    detail=AUDIENCE_LABELS.get(audience, audience),
+                    progress_value=0.40,
+                    fn=lambda: infer_source_profile_llm(
+                        client=client,
+                        provider=provider,
+                        chat_model=chat_model,
+                        user_context=sanitized_context,
+                        cleaned_document_texts=cleaned_docs,
+                        audience=audience,
+                    ),
                 )
                 inferred_profile = source_profile_to_dict(inferred)
                 inferred_profiles[audience] = inferred_profile
@@ -2112,18 +2154,27 @@ def main() -> None:
                     plan_targets = [(selected_style_key, audience, inferred_profile)]
 
                 planning_errors: list[str] = []
-                for style_id, aud_key, profile_for_brief in plan_targets:
+                for idx, (style_id, aud_key, profile_for_brief) in enumerate(plan_targets, start=1):
                     try:
-                        brief = build_structured_visual_brief(
-                            client,
-                            chat_model,
-                            user_context=sanitized_context,
-                            cleaned_document_texts=cleaned_docs,
-                            audience=aud_key,
-                            style_id=style_id,
-                            inferred_profile=profile_for_brief,
-                            chart_reference_block=gen_ref_block,
-                            refinement_notes=refinement,
+                        brief = run_llm_stage_with_live_timer(
+                            stage_name="Building structured visual brief",
+                            detail=(
+                                f"{idx}/{len(plan_targets)} targets · "
+                                f"{STYLES.get(style_id, {}).get('name', style_id)} · "
+                                f"{AUDIENCE_LABELS.get(aud_key, aud_key)}"
+                            ),
+                            progress_value=0.46 + (0.08 * ((idx - 1) / max(len(plan_targets), 1))),
+                            fn=lambda style_id=style_id, aud_key=aud_key, profile_for_brief=profile_for_brief: build_structured_visual_brief(
+                                client,
+                                chat_model,
+                                user_context=sanitized_context,
+                                cleaned_document_texts=cleaned_docs,
+                                audience=aud_key,
+                                style_id=style_id,
+                                inferred_profile=profile_for_brief,
+                                chart_reference_block=gen_ref_block,
+                                refinement_notes=refinement,
+                            ),
                         )
                         brief_block = format_structured_brief_for_prompt(brief)
                         brief_hash = structured_brief_sha256(brief_block)
