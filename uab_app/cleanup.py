@@ -280,9 +280,16 @@ def clean_document_text_llm(
         "Preserve headings, bullets, structure, and factual medical content. "
         "Output ONLY the cleaned text, no preamble."
     )
+    timeout_env = os.environ.get("DOCUMENT_CLEAN_TIMEOUT_S", "").strip()
+    try:
+        cleanup_timeout = float(timeout_env) if timeout_env else 45.0
+    except ValueError:
+        cleanup_timeout = 45.0
+    cleanup_timeout = max(10.0, min(cleanup_timeout, 120.0))
 
     def _clean_chunk(idx: int, chunk: str) -> tuple[int, str]:
         try:
+            call_client = client.with_options(timeout=cleanup_timeout, max_retries=0)
             kwargs: dict[str, Any] = {
                 "model": chat_model,
                 "messages": [
@@ -292,7 +299,7 @@ def clean_document_text_llm(
                 "temperature": 0.2,
                 "max_tokens": 4096,
             }
-            resp = client.chat.completions.create(**kwargs)
+            resp = call_client.chat.completions.create(**kwargs)
             choice = resp.choices[0].message.content
             if choice and choice.strip():
                 return idx, strip_control_chars(choice.strip())
