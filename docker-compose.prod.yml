@@ -1,0 +1,33 @@
+services:
+  uab-infographic-generator:
+    container_name: uab-infographic-generator
+    build:
+      context: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      UAB_INFOGRAPHIC_PRODUCTION: "true"
+      UAB_MEDICINE_LOGO_PATH: /app/assets/uab-medicine-logo.jpg
+      STREAMLIT_SERVER_ENABLE_CORS: "false"
+      STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION: "false"
+    expose:
+      - "8501"
+    networks:
+      - shared
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  shared:
+    external: true
+    name: shared_new_docker_network

@@ -447,7 +447,8 @@ def format_chart_reference_for_prompt(charts: list[dict[str, Any]]) -> str:
         "CHART ACCURACY: User-provided reference below is from manuscripts/publications or their data files. "
         "When you include charts in the infographic, align labels, values, intervals, and group names with "
         "this reference. Do not invent statistics beyond what the reference and source documents support. "
-        "If reference values are incomplete, use labeled placeholder boxes as required by the chart rules.\n\n"
+        "If reference values are incomplete, omit that chart or use only a non-quantitative evidence callout "
+        "unless an explicit PLACEHOLDER entry is listed below.\n\n"
         "[USER CHART REFERENCE]:\n" + "\n\n".join(blocks)
     )
 

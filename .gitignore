@@ -212,3 +212,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.DS_Store
+streamlit.log
+assets/style_test_runs/
+assets/audience_examples/
