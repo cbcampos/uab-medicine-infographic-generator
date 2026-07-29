@@ -104,6 +104,8 @@ AUDIENCE_LABELS = {
     "community": "Community outreach",
 }
 
+PRODUCTION_STYLE_KEYS = ("uab-corporate", "uab-craft-handmade")
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name, "").strip().lower()
@@ -218,7 +220,7 @@ def init_session_state() -> None:
     if "show_style_guide" not in st.session_state:
         st.session_state.show_style_guide = False
     if "single_style" not in st.session_state:
-        st.session_state.single_style = "uab-craft-handmade"
+        st.session_state.single_style = "uab-corporate"
     if "last_image_bytes" not in st.session_state:
         st.session_state.last_image_bytes = None
     if "generation_history" not in st.session_state:
@@ -576,6 +578,19 @@ def main() -> None:
     session_id = st.session_state.session_id
     production_mode = _env_flag("UAB_INFOGRAPHIC_PRODUCTION")
     hide_api_config = production_mode or _env_flag("UAB_HIDE_API_CONFIG")
+    production_simple_ui = hide_api_config
+    available_style_keys = (
+        [key for key in PRODUCTION_STYLE_KEYS if key in STYLES]
+        if production_simple_ui
+        else list(STYLES.keys())
+    )
+    if not available_style_keys:
+        available_style_keys = list(STYLES.keys())
+    if production_simple_ui and not st.session_state.get("production_style_initialized"):
+        st.session_state.single_style = "uab-corporate"
+        st.session_state.production_style_initialized = True
+    if st.session_state.get("single_style") not in available_style_keys:
+        st.session_state.single_style = available_style_keys[0]
 
     st.markdown(
         """
@@ -596,11 +611,17 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.warning(
-        "For ideation only — not for production use. Generated infographics may contain hallucinations, "
-        "inaccurate numbers, or misleading wording. Always perform human review and final editing, and "
-        "use a qualified graphic designer/content owner before publication."
-    )
+    if production_simple_ui:
+        st.warning(
+            "Drafting aid: generated infographics may contain hallucinations, inaccurate numbers, "
+            "or misleading wording. Always perform human review and final editing before publication."
+        )
+    else:
+        st.warning(
+            "For ideation only — not for production use. Generated infographics may contain hallucinations, "
+            "inaccurate numbers, or misleading wording. Always perform human review and final editing, and "
+            "use a qualified graphic designer/content owner before publication."
+        )
 
     def open_style_guide_dialog() -> None:
         @st.dialog("Style guide: example outputs")
@@ -610,7 +631,9 @@ def main() -> None:
                 "Examples are generated from the same source pack for side-by-side comparison."
             )
             ex_dir = Path(__file__).resolve().parent.parent / "assets" / "style_examples"
-            style_items = list(STYLES.items())
+            style_items = [
+                (key, meta) for key, meta in STYLES.items() if key in available_style_keys
+            ]
             for i in range(0, len(style_items), 2):
                 cols = st.columns(2)
                 for j, col in enumerate(cols):
@@ -654,209 +677,203 @@ def main() -> None:
     if st.session_state.get("show_style_guide", False):
         open_style_guide_dialog()
 
-    with st.sidebar:
-        experience_mode = st.radio(
-            "Experience",
-            options=["basic", "advanced"],
-            format_func=lambda m: "Basic (recommended)" if m == "basic" else "Advanced",
-            index=0,
-            key="ux_experience_mode",
-            help="Basic keeps the workflow simple. Advanced exposes full generation controls.",
-        )
-        if hide_api_config:
-            st.caption("Using configured UAB Azure image generation.")
-        st.markdown("---")
-        if hide_api_config:
-            provider = "azure"
-        elif experience_mode == "basic":
-            provider = st.session_state.get("sidebar_provider", _autodetect_provider())
-            st.caption(
-                "Basic mode uses saved/environment API settings automatically. "
-                "Switch to Advanced to change provider and model deployments."
+    logo_path = resolve_logo_path()
+    if production_simple_ui:
+        experience_mode = "advanced"
+        provider = "azure"
+        mode = "single"
+        selected_style_key = st.session_state.single_style
+        compare_style_keys: list[str] = []
+    else:
+        with st.sidebar:
+            experience_mode = st.radio(
+                "Experience",
+                options=["basic", "advanced"],
+                format_func=lambda m: "Basic (recommended)" if m == "basic" else "Advanced",
+                index=0,
+                key="ux_experience_mode",
+                help="Basic keeps the workflow simple. Advanced exposes full generation controls.",
             )
-        else:
-            st.markdown("### ⚙️ API Configuration")
-            provider = st.radio(
-                "Provider",
-                options=["openai", "azure", "gemini"],
-                format_func=lambda p: (
-                    "🟢 OpenAI (GPT Image 2)"
-                    if p == "openai"
-                    else ("🔷 Azure OpenAI (GPT Image 2)" if p == "azure" else "🟣 Gemini")
-                ),
-                index=1,
-                horizontal=False,
-                key="sidebar_provider",
-            )
+            if experience_mode == "basic":
+                provider = st.session_state.get("sidebar_provider", _autodetect_provider())
+                st.caption(
+                    "Basic mode uses saved/environment API settings automatically. "
+                    "Switch to Advanced to change provider and model deployments."
+                )
+            else:
+                st.markdown("### ⚙️ API Configuration")
+                provider = st.radio(
+                    "Provider",
+                    options=["openai", "azure", "gemini"],
+                    format_func=lambda p: (
+                        "🟢 OpenAI (GPT Image 2)"
+                        if p == "openai"
+                        else ("🔷 Azure OpenAI (GPT Image 2)" if p == "azure" else "🟣 Gemini")
+                    ),
+                    index=1,
+                    horizontal=False,
+                    key="sidebar_provider",
+                )
+                st.markdown("---")
+
+            if experience_mode == "advanced" and provider == "openai":
+                with st.expander("🔑 OpenAI", expanded=True):
+                    st.text_input(
+                        "API Key",
+                        value=os.environ.get("OPENAI_API_KEY", ""),
+                        key="openai_api_key",
+                        type="password",
+                    )
+                    st.text_input(
+                        "Chat model (document cleanup)",
+                        value=os.environ.get("OPENAI_CHAT_MODEL", OPENAI_DEFAULT_CHAT_MODEL),
+                        key="openai_chat_model",
+                        help="e.g. gpt-4o-mini",
+                    )
+                    st.text_input(
+                        "Vision model (chart extraction / QA)",
+                        value=os.environ.get("OPENAI_VISION_MODEL", OPENAI_DEFAULT_VISION_MODEL),
+                        key="openai_vision_model",
+                        help="Use a vision-capable model (e.g. gpt-4o)",
+                    )
+                    st.text_input(
+                        "Image model (GPT Image)",
+                        value=os.environ.get("OPENAI_IMAGE_MODEL", OPENAI_DEFAULT_IMAGE_MODEL),
+                        key="openai_image_model",
+                        help="Must match an image-capable model available to your API key (e.g. gpt-image-2).",
+                    )
+            elif experience_mode == "advanced" and provider == "azure":
+                with st.expander("🔷 Azure OpenAI", expanded=True):
+                    st.text_input(
+                        "API Key",
+                        value=os.environ.get("AZURE_OPENAI_API_KEY", ""),
+                        key="azure_api_key",
+                        type="password",
+                    )
+                    st.text_input(
+                        "Endpoint",
+                        value=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+                        key="azure_endpoint",
+                        placeholder="https://your-resource.openai.azure.com",
+                    )
+                    st.text_input(
+                        "API Version",
+                        value="2024-02-01",
+                        key="azure_api_version",
+                        help=(
+                            "Locked for all Azure calls in this app (chat, vision, and image generation)."
+                        ),
+                        disabled=True,
+                    )
+                    st.text_input(
+                        "Image deployment",
+                        value=os.environ.get("AZURE_OPENAI_IMAGE_MODEL", "gpt-image-2"),
+                        key="azure_image_model",
+                        help=(
+                            "Azure deployment name for image generation. The app calls "
+                            "/openai/deployments/{deployment}/images/generations."
+                        ),
+                    )
+                    st.text_input(
+                        "Chat deployment (cleanup)",
+                        value=os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini"),
+                        key="azure_chat_model",
+                        help="Azure deployment name for text cleanup",
+                    )
+                    st.text_input(
+                        "Vision deployment (chart extraction / QA)",
+                        value=os.environ.get(
+                            "AZURE_OPENAI_VISION_DEPLOYMENT",
+                            OPENAI_DEFAULT_VISION_MODEL,
+                        ),
+                        key="azure_vision_deployment",
+                        help="Deployment name for gpt-4o-class vision model",
+                    )
+            elif experience_mode == "advanced":
+                with st.expander("🟣 Gemini", expanded=True):
+                    st.text_input(
+                        "API Key",
+                        value=os.environ.get("GEMINI_API_KEY", ""),
+                        key="gemini_api_key",
+                        type="password",
+                    )
+                    st.text_input(
+                        "Chat model (document cleanup)",
+                        value=os.environ.get("GEMINI_CHAT_MODEL", GEMINI_DEFAULT_CHAT_MODEL),
+                        key="gemini_chat_model",
+                        help="e.g. gemini-2.5-pro",
+                    )
+                    st.text_input(
+                        "Vision model (chart extraction / QA)",
+                        value=os.environ.get("GEMINI_VISION_MODEL", GEMINI_DEFAULT_VISION_MODEL),
+                        key="gemini_vision_model",
+                        help="Vision-capable Gemini model, e.g. gemini-2.5-pro",
+                    )
+                    st.text_input(
+                        "Image model",
+                        value=os.environ.get("GEMINI_IMAGE_MODEL", GEMINI_DEFAULT_IMAGE_MODEL),
+                        key="gemini_image_model",
+                        help=(
+                            "Gemini image-generation model ID, e.g. gemini-3-pro-image-preview "
+                            "(Nano Banana Pro). Names like nano-banana-pro are rewritten to the API ID automatically."
+                        ),
+                    )
+
             st.markdown("---")
-
-        if not hide_api_config and experience_mode == "advanced" and provider == "openai":
-            with st.expander("🔑 OpenAI", expanded=True):
-                st.text_input(
-                    "API Key",
-                    value=os.environ.get("OPENAI_API_KEY", ""),
-                    key="openai_api_key",
-                    type="password",
-                )
-                st.text_input(
-                    "Chat model (document cleanup)",
-                    value=os.environ.get("OPENAI_CHAT_MODEL", OPENAI_DEFAULT_CHAT_MODEL),
-                    key="openai_chat_model",
-                    help="e.g. gpt-4o-mini",
-                )
-                st.text_input(
-                    "Vision model (chart extraction / QA)",
-                    value=os.environ.get("OPENAI_VISION_MODEL", OPENAI_DEFAULT_VISION_MODEL),
-                    key="openai_vision_model",
-                    help="Use a vision-capable model (e.g. gpt-4o)",
-                )
-                st.text_input(
-                    "Image model (GPT Image)",
-                    value=os.environ.get("OPENAI_IMAGE_MODEL", OPENAI_DEFAULT_IMAGE_MODEL),
-                    key="openai_image_model",
-                    help="Must match an image-capable model available to your API key (e.g. gpt-image-2).",
-                )
-        elif not hide_api_config and experience_mode == "advanced" and provider == "azure":
-            with st.expander("🔷 Azure OpenAI", expanded=True):
-                st.text_input(
-                    "API Key",
-                    value=os.environ.get("AZURE_OPENAI_API_KEY", ""),
-                    key="azure_api_key",
-                    type="password",
-                )
-                st.text_input(
-                    "Endpoint",
-                    value=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
-                    key="azure_endpoint",
-                    placeholder="https://your-resource.openai.azure.com",
-                )
-                st.text_input(
-                    "API Version",
-                    value="2024-02-01",
-                    key="azure_api_version",
-                    help=(
-                        "Locked for all Azure calls in this app (chat, vision, and image generation)."
-                    ),
-                    disabled=True,
-                )
-                st.text_input(
-                    "Image deployment",
-                    value=os.environ.get("AZURE_OPENAI_IMAGE_MODEL", "gpt-image-2"),
-                    key="azure_image_model",
-                    help=(
-                        "Azure deployment name for image generation. The app calls "
-                        "/openai/deployments/{deployment}/images/generations."
-                    ),
-                )
-                st.text_input(
-                    "Chat deployment (cleanup)",
-                    value=os.environ.get("AZURE_OPENAI_CHAT_DEPLOYMENT", "gpt-4o-mini"),
-                    key="azure_chat_model",
-                    help="Azure deployment name for text cleanup",
-                )
-                st.text_input(
-                    "Vision deployment (chart extraction / QA)",
-                    value=os.environ.get(
-                        "AZURE_OPENAI_VISION_DEPLOYMENT",
-                        OPENAI_DEFAULT_VISION_MODEL,
-                    ),
-                    key="azure_vision_deployment",
-                    help="Deployment name for gpt-4o-class vision model",
-                )
-        elif not hide_api_config and experience_mode == "advanced":
-            with st.expander("🟣 Gemini", expanded=True):
-                st.text_input(
-                    "API Key",
-                    value=os.environ.get("GEMINI_API_KEY", ""),
-                    key="gemini_api_key",
-                    type="password",
-                )
-                st.text_input(
-                    "Chat model (document cleanup)",
-                    value=os.environ.get("GEMINI_CHAT_MODEL", GEMINI_DEFAULT_CHAT_MODEL),
-                    key="gemini_chat_model",
-                    help="e.g. gemini-2.5-pro",
-                )
-                st.text_input(
-                    "Vision model (chart extraction / QA)",
-                    value=os.environ.get("GEMINI_VISION_MODEL", GEMINI_DEFAULT_VISION_MODEL),
-                    key="gemini_vision_model",
-                    help="Vision-capable Gemini model, e.g. gemini-2.5-pro",
-                )
-                st.text_input(
-                    "Image model",
-                    value=os.environ.get("GEMINI_IMAGE_MODEL", GEMINI_DEFAULT_IMAGE_MODEL),
-                    key="gemini_image_model",
-                    help=(
-                        "Gemini image-generation model ID, e.g. gemini-3-pro-image-preview "
-                        "(Nano Banana Pro). Names like nano-banana-pro are rewritten to the API ID automatically."
-                    ),
+            st.markdown("### 🎯 Generation mode")
+            if experience_mode == "basic":
+                mode = "single"
+                st.caption("One-shot workflow: upload sources and generate.")
+            else:
+                mode = st.radio(
+                    "Mode",
+                    options=["single", "compare", "audiences"],
+                    format_func=lambda m: {
+                        "single": "Single style",
+                        "compare": "Style comparison (3-way)",
+                        "audiences": "All 4 audiences",
+                    }[m],
+                    key="gen_mode",
                 )
 
-        st.markdown("---")
-        st.markdown("### 🎯 Generation mode")
-        if experience_mode == "basic":
-            mode = "single"
-            st.caption("One-shot workflow: upload sources and generate.")
-        else:
-            mode = st.radio(
-                "Mode",
-                options=["single", "compare", "audiences"],
-                format_func=lambda m: {
-                    "single": "Single style",
-                    "compare": "Style comparison (3-way)",
-                    "audiences": "All 4 audiences",
-                }[m],
-                key="gen_mode",
-            )
-
-        st.markdown("### 📋 Style (single mode)")
-        if experience_mode == "basic":
+            st.markdown("### 📋 Style (single mode)")
             selected_style_key = st.selectbox(
-                "Style",
-                options=list(STYLES.keys()),
+                "Style" if experience_mode == "basic" else "Visual style",
+                options=available_style_keys,
                 format_func=lambda k: STYLES[k]["name"],
                 key="single_style",
+                disabled=(experience_mode == "advanced" and mode == "compare"),
             )
-        else:
-            selected_style_key = st.selectbox(
-                "Visual style",
-                options=list(STYLES.keys()),
-                format_func=lambda k: STYLES[k]["name"],
-                key="single_style",
-                disabled=(mode == "compare"),
-            )
-        if mode in ("single", "audiences"):
-            st.caption(STYLES[selected_style_key]["description"])
-            compare_style_keys: list[str] = []
-            if mode == "audiences":
-                st.caption("Generates this style once for each intended audience and builds a contact sheet.")
-        else:
-            st.markdown("### 🔀 Styles to compare")
-            all_style_keys = list(STYLES.keys())
-            default_compare = all_style_keys[:3] if len(all_style_keys) >= 3 else all_style_keys
-            compare_style_keys = st.multiselect(
-                "Pick exactly 3 styles",
-                options=all_style_keys,
-                default=default_compare,
-                format_func=lambda k: STYLES[k]["name"],
-                key="compare_style_keys_multiselect",
-                max_selections=3,
-            )
-            if len(compare_style_keys) != 3:
-                st.warning("Pick exactly 3 styles for comparison mode.")
+            if mode in ("single", "audiences"):
+                st.caption(STYLES[selected_style_key]["description"])
+                compare_style_keys = []
+                if mode == "audiences":
+                    st.caption("Generates this style once for each intended audience and builds a contact sheet.")
+            else:
+                st.markdown("### 🔀 Styles to compare")
+                all_style_keys = list(STYLES.keys())
+                default_compare = all_style_keys[:3] if len(all_style_keys) >= 3 else all_style_keys
+                compare_style_keys = st.multiselect(
+                    "Pick exactly 3 styles",
+                    options=all_style_keys,
+                    default=default_compare,
+                    format_func=lambda k: STYLES[k]["name"],
+                    key="compare_style_keys_multiselect",
+                    max_selections=3,
+                )
+                if len(compare_style_keys) != 3:
+                    st.warning("Pick exactly 3 styles for comparison mode.")
 
-        if st.button("🖼️ Open style guide", key="btn_open_style_guide", use_container_width=True):
-            st.session_state.show_style_guide = True
-            st.rerun()
+            if st.button("🖼️ Open style guide", key="btn_open_style_guide", use_container_width=True):
+                st.session_state.show_style_guide = True
+                st.rerun()
 
-        st.markdown("---")
-        logo_path = resolve_logo_path()
-        if not logo_path and not production_mode:
-            st.info(
-                "Place `uab-medicine-logo.jpg` in `assets/` or set `UAB_MEDICINE_LOGO_PATH`. "
-                "Post-processing will composite the approved logo when the file is available."
-            )
+            st.markdown("---")
+            if not logo_path and not production_mode:
+                st.info(
+                    "Place `uab-medicine-logo.jpg` in `assets/` or set `UAB_MEDICINE_LOGO_PATH`. "
+                    "Post-processing will composite the approved logo when the file is available."
+                )
 
     step1_open = True
     step2_open = bool(st.session_state.get("docs_uploader"))
@@ -866,7 +883,16 @@ def main() -> None:
         col_main, col_doc = st.columns([1, 1])
 
         with col_main:
-            if experience_mode == "basic":
+            if production_simple_ui:
+                st.markdown("### ✏️ Optional context")
+                user_context = st.text_area(
+                    "Add optional context",
+                    height=150,
+                    key="user_context_area",
+                    placeholder="Optional: add a short goal, preferred framing, or key point to emphasize.",
+                )
+                audience = st.session_state.get("audience_radio", "academic")
+            elif experience_mode == "basic":
                 audience = "academic"
                 st.markdown("### 🚀 One-shot generation")
                 st.caption("Upload sources, add an optional goal, and generate.")
@@ -905,8 +931,8 @@ def main() -> None:
             publication_fidelity_mode = False
             expected_citation = ""
             preferred_terms: list[str] = []
-            structured_planning_enabled = False
-            if experience_mode == "advanced":
+            structured_planning_enabled = production_simple_ui
+            if experience_mode == "advanced" and not production_simple_ui:
                 with st.expander("Advanced generation settings", expanded=True):
                     size = st.selectbox(
                         "Image size",
@@ -944,7 +970,7 @@ def main() -> None:
                         ),
                     )
 
-            if experience_mode == "advanced":
+            if experience_mode == "advanced" and not production_simple_ui:
                 phi_ok = st.checkbox(
                     "I confirm this content does NOT contain protected health information (PHI).",
                     value=False,
@@ -952,11 +978,38 @@ def main() -> None:
                 )
 
         with col_doc:
-            st.markdown("### 📄 Documents (PDF, DOCX, TXT)")
-            st.caption(
-                f"Max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per file. These documents provide context and knowledge "
-                "for the infographic — the content will be extracted, cleaned, and included as source material in the generation prompt."
-            )
+            if production_simple_ui:
+                st.markdown("### 👥 Audience")
+                audience = st.radio(
+                    "Choose audience",
+                    options=AUDIENCE_KEYS,
+                    format_func=lambda a: AUDIENCE_LABELS[a],
+                    horizontal=False,
+                    key="audience_radio",
+                )
+                st.markdown("### 📋 Style")
+                selected_style_key = st.selectbox(
+                    "Choose style",
+                    options=available_style_keys,
+                    format_func=lambda k: STYLES[k]["name"],
+                    key="single_style",
+                )
+                st.caption(STYLES[selected_style_key]["description"])
+                if st.button("🖼️ Open style guide", key="btn_open_style_guide_main", use_container_width=True):
+                    st.session_state.show_style_guide = True
+                    st.rerun()
+                phi_ok = st.checkbox(
+                    "I confirm this content does NOT contain protected health information (PHI).",
+                    value=False,
+                    key="phi_confirm",
+                )
+                st.markdown("### 📄 Upload documents")
+            else:
+                st.markdown("### 📄 Documents (PDF, DOCX, TXT)")
+                st.caption(
+                    f"Max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per file. These documents provide context and knowledge "
+                    "for the infographic — the content will be extracted, cleaned, and included as source material in the generation prompt."
+                )
             uploaded_files = st.file_uploader(
                 "Upload files",
                 type=["pdf", "docx", "txt"],
@@ -968,7 +1021,7 @@ def main() -> None:
     file_issues: list[str] = []
     files_list = list(uploaded_files) if uploaded_files else []
     if files_list:
-        if experience_mode == "advanced":
+        if experience_mode == "advanced" and not production_simple_ui:
             st.warning("⚠️ Documents are attached. Ensure no PHI before generating.")
         for f in files_list:
             ext = Path(f.name).suffix.lower()
@@ -1004,17 +1057,18 @@ def main() -> None:
         for issue in file_issues:
             st.error(issue)
 
-    with st.expander("📖 Extracted document preview", expanded=False):
-        if extracted_preview:
-            for name, text in extracted_preview:
-                preview = sanitize_input(text, source="document")[0][:1500]
-                st.markdown(f"**{name}** ({len(text)} chars)")
-                st.text(preview + ("..." if len(text) > 1500 else ""))
-        else:
-            st.markdown(
-                "<span style='color: #666'>No documents uploaded yet. Upload PDF, DOCX, or TXT files above to see extracted text here.</span>",
-                unsafe_allow_html=True,
-            )
+    if not production_simple_ui:
+        with st.expander("📖 Extracted document preview", expanded=False):
+            if extracted_preview:
+                for name, text in extracted_preview:
+                    preview = sanitize_input(text, source="document")[0][:1500]
+                    st.markdown(f"**{name}** ({len(text)} chars)")
+                    st.text(preview + ("..." if len(text) > 1500 else ""))
+            else:
+                st.markdown(
+                    "<span style='color: #666'>No documents uploaded yet. Upload PDF, DOCX, or TXT files above to see extracted text here.</span>",
+                    unsafe_allow_html=True,
+                )
 
     # ── API helpers (used by chart extraction + generation) ──
     def get_credentials() -> tuple[bool, str, Any, str, str]:
@@ -1219,7 +1273,7 @@ def main() -> None:
     step_refs_ready = False
     step_generate_ready = bool(phi_ok and not inj_rule_ids and not file_issues)
 
-    if experience_mode == "advanced":
+    if experience_mode == "advanced" and not production_simple_ui:
         # ── Publication chart / data reference (optional, no pre-verify step) ──
         st.markdown("### 📊 Publication chart reference (optional)")
         st.caption(
@@ -1692,8 +1746,9 @@ def main() -> None:
         chart_context_snippet = ""
         snippet_txt = ""
         cross_text = combined_docs.strip()
-        st.caption("Basic mode uses document-only generation. Use Advanced for chart/data controls.")
-    if experience_mode == "advanced":
+        if not production_simple_ui:
+            st.caption("Basic mode uses document-only generation. Use Advanced for chart/data controls.")
+    if experience_mode == "advanced" and not production_simple_ui:
         chart_reference_block = format_chart_reference_for_prompt(st.session_state.charts)
         fidelity_preflight = publication_reference_preflight_issues(st.session_state.charts)
     if publication_fidelity_mode and fidelity_preflight:
@@ -1723,7 +1778,7 @@ def main() -> None:
         inferred_profile=inferred_profile_preview,
     )
 
-    if experience_mode == "advanced":
+    if experience_mode == "advanced" and not production_simple_ui:
         with st.expander("View full prompt (audited locally only — never logged server-side)", expanded=False):
             st.caption(
                 "This preview uses **regex cleanup** on uploaded documents. On **Generate**, the app runs "
@@ -1901,7 +1956,8 @@ def main() -> None:
             readiness_issues.append("Resolve publication fidelity preflight issues in chart references.")
 
         gen_disabled = (
-            not phi_ok
+            not step_context_ready
+            or not phi_ok
             or bool(credential_issue)
             or bool(inj_rule_ids)
             or bool(file_issues)
@@ -1909,8 +1965,11 @@ def main() -> None:
             or (publication_fidelity_mode and bool(fidelity_preflight))
         )
 
-        st.markdown("### Readiness")
-        if experience_mode == "basic":
+        if production_simple_ui:
+            if readiness_issues:
+                st.warning("Complete the required items above before generating.")
+        elif experience_mode == "basic":
+            st.markdown("### Readiness")
             sources_ok = bool(step_context_ready) and not bool(file_issues) and not bool(inj_rule_ids)
             phi_status_ok = bool(phi_ok)
             api_ok = not bool(credential_issue)
@@ -1928,6 +1987,7 @@ def main() -> None:
             else:
                 st.caption("Complete all checklist items above to enable Generate.")
         else:
+            st.markdown("### Readiness")
             if readiness_issues:
                 st.warning("Generation is currently blocked:")
                 for issue in readiness_issues:
@@ -2728,7 +2788,7 @@ def main() -> None:
             disabled=dl_disabled,
         )
         latest_scan = st.session_state.get("last_refinements_scan")
-        if isinstance(latest_scan, dict) and latest_scan:
+        if not production_simple_ui and isinstance(latest_scan, dict) and latest_scan:
             if st.button(
                 "✨ Use AI suggestions",
                 key="btn_use_ai_suggestions_primary",
@@ -2741,292 +2801,294 @@ def main() -> None:
                 st.session_state.refinement_loop_area = apply_txt
                 st.session_state.refine_generate_now = True
                 st.rerun()
-        with st.expander("📋 Review charts in the generated image (vision QA)", expanded=True):
-            has_ref = bool(str(st.session_state.get("last_chart_reference_block", "") or "").strip())
-            st.caption(
-                "The vision model reads your **exported PNG** and returns bullet-point feedback **below** "
-                "(saved until you generate again or clear it). "
-                + (
-                    "With a chart reference in the last prompt, it compares on-screen numbers/labels to that reference."
-                    if has_ref
-                    else "No chart reference was in the last prompt — it comments only on what it can read in the image."
+        if not production_simple_ui:
+            with st.expander("📋 Review charts in the generated image (vision QA)", expanded=True):
+                has_ref = bool(str(st.session_state.get("last_chart_reference_block", "") or "").strip())
+                st.caption(
+                    "The vision model reads your **exported PNG** and returns bullet-point feedback **below** "
+                    "(saved until you generate again or clear it). "
+                    + (
+                        "With a chart reference in the last prompt, it compares on-screen numbers/labels to that reference."
+                        if has_ref
+                        else "No chart reference was in the last prompt — it comments only on what it can read in the image."
+                    )
                 )
-            )
-            allow_qa = st.checkbox(
-                "Run vision review (uses API credits)",
-                value=False,
-                key="post_gen_chart_qa_enable",
-            )
-            if st.button(
-                "Run chart review",
-                key="btn_post_gen_chart_qa",
-                disabled=(not allow_qa),
-            ):
-                ok_q, err_q, client_q, _im_q, _cm_q = get_credentials()
-                if not ok_q or client_q is None:
-                    st.error(err_q or "Configure API keys for QA.")
-                else:
-                    try:
-                        if publication_fidelity_mode:
-                            qa_obj = run_publication_fidelity_qa(
-                                client_q,
-                                get_vision_model_name(),
-                                st.session_state.last_image_bytes,
-                                str(st.session_state.get("last_chart_reference_block", "") or ""),
-                                preferred_terms,
-                                expected_citation,
-                            )
-                            st.session_state.last_fidelity_qa_result = qa_obj
-                            st.session_state.last_fidelity_qa_pass = bool(qa_obj.get("pass", False))
-                            st.session_state.last_post_gen_chart_qa_text = (
-                                format_publication_fidelity_qa_markdown(qa_obj)
-                            )
-                            if st.session_state.last_fidelity_qa_pass:
-                                st.success("Publication fidelity QA: PASS")
-                            else:
-                                st.error("Publication fidelity QA: FAIL")
-                            st.json(qa_obj)
-                        else:
-                            qa_txt = run_post_generation_chart_qa(
-                                client_q,
-                                get_vision_model_name(),
-                                st.session_state.last_image_bytes,
-                                str(st.session_state.get("last_chart_reference_block", "") or ""),
-                            )
-                            if (qa_txt or "").strip():
-                                st.session_state.last_post_gen_chart_qa_text = qa_txt.strip()
-                            else:
-                                st.session_state.last_post_gen_chart_qa_text = (
-                                    "- _(The vision model returned an empty response. "
-                                    "Try again, pick another vision model, or check API errors.)_"
+                allow_qa = st.checkbox(
+                    "Run vision review (uses API credits)",
+                    value=False,
+                    key="post_gen_chart_qa_enable",
+                )
+                if st.button(
+                    "Run chart review",
+                    key="btn_post_gen_chart_qa",
+                    disabled=(not allow_qa),
+                ):
+                    ok_q, err_q, client_q, _im_q, _cm_q = get_credentials()
+                    if not ok_q or client_q is None:
+                        st.error(err_q or "Configure API keys for QA.")
+                    else:
+                        try:
+                            if publication_fidelity_mode:
+                                qa_obj = run_publication_fidelity_qa(
+                                    client_q,
+                                    get_vision_model_name(),
+                                    st.session_state.last_image_bytes,
+                                    str(st.session_state.get("last_chart_reference_block", "") or ""),
+                                    preferred_terms,
+                                    expected_citation,
                                 )
-                        audit_log(
-                            session_id,
-                            provider,
-                            selected_style_key,
-                            audience,
-                            True,
-                            0,
-                            "post_generation_chart_qa",
-                        )
-                    except BaseException as ex:
-                        st.error(user_friendly_error(ex))
-            qa_saved = (st.session_state.get("last_post_gen_chart_qa_text") or "").strip()
-            if qa_saved:
-                st.markdown("#### Chart review output")
-                st.markdown(qa_saved)
-                if st.button("Clear chart review output", key="btn_clear_post_gen_qa", type="secondary"):
-                    st.session_state.last_post_gen_chart_qa_text = ""
-                    st.rerun()
-            if publication_fidelity_mode and st.session_state.get("last_fidelity_qa_result") is not None:
-                st.caption("Latest publication-fidelity result")
-                st.json(st.session_state.last_fidelity_qa_result)
-
-        _scan_open = bool(
-            (
-                isinstance(st.session_state.get("last_refinements_scan"), dict)
-                and st.session_state.last_refinements_scan
-            )
-            or bool(st.session_state.get("refinements_scan_allow", False))
-        )
-        with st.expander(
-            "🔎 Refinements scan (vision — align infographic to intent)",
-            expanded=_scan_open,
-        ):
-            st.caption(
-                "After generation, the vision model reads **this PNG** (with composited logo) and scores "
-                "how well it matches your context, cleaned sources, and the prompt from the **last successful** "
-                "single-mode run. Enables one-click edits for the next generation."
-            )
-            scan_ctx_raw = st.session_state.get("last_refinements_scan_context") or {}
-            scan_ctx: dict[str, str] = {
-                str(k): str(v) if v is not None else ""
-                for k, v in scan_ctx_raw.items()
-            }
-            if not scan_ctx.get("effective_prompt_excerpt", "").strip():
-                st.warning(
-                    "Generate once in single mode so the app can snapshot your prompt "
-                    "and sources for this scan."
-                )
-            scan_allow = st.checkbox(
-                "Run refinements scan (uses API credits)",
-                value=False,
-                key="refinements_scan_allow",
-            )
-            if st.button(
-                "Run refinements scan",
-                key="btn_refinements_scan",
-                disabled=not scan_allow,
-            ):
-                ok_s, err_s, client_s, _im_s, _cm_s = get_credentials()
-                if not ok_s or client_s is None:
-                    st.error(err_s or "Configure API keys for refinements scan.")
-                elif not st.session_state.get("last_image_bytes"):
-                    st.error("Generate an image first.")
-                else:
-                    try:
-                        with st.spinner("Scanning infographic with vision model…"):
-                            scan_result = run_refinements_scan_vision(
-                                client_s,
-                                get_vision_model_name(),
-                                st.session_state.last_image_bytes,
-                                scan_ctx,
+                                st.session_state.last_fidelity_qa_result = qa_obj
+                                st.session_state.last_fidelity_qa_pass = bool(qa_obj.get("pass", False))
+                                st.session_state.last_post_gen_chart_qa_text = (
+                                    format_publication_fidelity_qa_markdown(qa_obj)
+                                )
+                                if st.session_state.last_fidelity_qa_pass:
+                                    st.success("Publication fidelity QA: PASS")
+                                else:
+                                    st.error("Publication fidelity QA: FAIL")
+                                st.json(qa_obj)
+                            else:
+                                qa_txt = run_post_generation_chart_qa(
+                                    client_q,
+                                    get_vision_model_name(),
+                                    st.session_state.last_image_bytes,
+                                    str(st.session_state.get("last_chart_reference_block", "") or ""),
+                                )
+                                if (qa_txt or "").strip():
+                                    st.session_state.last_post_gen_chart_qa_text = qa_txt.strip()
+                                else:
+                                    st.session_state.last_post_gen_chart_qa_text = (
+                                        "- _(The vision model returned an empty response. "
+                                        "Try again, pick another vision model, or check API errors.)_"
+                                    )
+                            audit_log(
+                                session_id,
+                                provider,
+                                selected_style_key,
+                                audience,
+                                True,
+                                0,
+                                "post_generation_chart_qa",
                             )
-                        st.session_state.last_refinements_scan = scan_result
-                        audit_log(
-                            session_id,
-                            provider,
-                            selected_style_key,
-                            audience,
-                            True,
-                            0,
-                            "refinements_scan_vision",
-                        )
-                        st.success("Refinements scan complete.")
+                        except BaseException as ex:
+                            st.error(user_friendly_error(ex))
+                qa_saved = (st.session_state.get("last_post_gen_chart_qa_text") or "").strip()
+                if qa_saved:
+                    st.markdown("#### Chart review output")
+                    st.markdown(qa_saved)
+                    if st.button("Clear chart review output", key="btn_clear_post_gen_qa", type="secondary"):
+                        st.session_state.last_post_gen_chart_qa_text = ""
                         st.rerun()
-                    except Exception as ex:
-                        st.error(user_friendly_error(ex))
+                if publication_fidelity_mode and st.session_state.get("last_fidelity_qa_result") is not None:
+                    st.caption("Latest publication-fidelity result")
+                    st.json(st.session_state.last_fidelity_qa_result)
 
-            scan_data = st.session_state.get("last_refinements_scan")
-            if isinstance(scan_data, dict) and scan_data:
-                lg = scan_data.get("letter_grade") or "?"
-                st.markdown(f"#### Letter grade: **{lg}**")
-                if (scan_data.get("alignment_summary") or "").strip():
-                    st.markdown("**Summary**")
-                    st.markdown(scan_data["alignment_summary"])
-                scorecard = scan_data.get("scorecard") or {}
-                if isinstance(scorecard, dict) and scorecard:
-                    st.markdown("**Scorecard**")
-                    labels = {
-                        "factual_fidelity": "Factual fidelity",
-                        "audience_fit": "Audience fit",
-                        "text_density": "Text density",
-                        "visual_hierarchy": "Visual hierarchy",
-                        "style_fidelity": "Style fidelity",
-                        "footer_logo_safety": "Footer/logo safety",
-                    }
-                    for key, label in labels.items():
-                        item = scorecard.get(key) or scorecard.get(label) or {}
-                        if isinstance(item, dict):
-                            score = str(item.get("score") or "?").strip()
-                            note = str(item.get("note") or "").strip()
-                        else:
-                            score = str(item or "?").strip()
-                            note = ""
-                        if score or note:
-                            st.markdown(f"- **{label}: {score or '?'}**" + (f" — {note}" if note else ""))
-                if scan_data.get("strengths"):
-                    st.markdown("**Strengths**")
-                    for s in scan_data["strengths"]:
-                        st.markdown(f"- {s}")
-                if scan_data.get("issues"):
-                    st.markdown("**Issues**")
-                    for s in scan_data["issues"]:
-                        st.markdown(f"- {s}")
-                if (scan_data.get("fidelity_notes") or "").strip():
-                    st.markdown("**Source / number fidelity**")
-                    st.markdown(scan_data["fidelity_notes"])
-                st.markdown("**Recommended refinements (next prompt)**")
-                for r in scan_data.get("recommended_refinements") or []:
-                    st.markdown(f"- {r}")
-                if scan_data.get("prompt_edits"):
-                    st.markdown("**Concrete prompt edits**")
-                    for r in scan_data.get("prompt_edits") or []:
+        if not production_simple_ui:
+            _scan_open = bool(
+                (
+                    isinstance(st.session_state.get("last_refinements_scan"), dict)
+                    and st.session_state.last_refinements_scan
+                )
+                or bool(st.session_state.get("refinements_scan_allow", False))
+            )
+            with st.expander(
+                "🔎 Refinements scan (vision — align infographic to intent)",
+                expanded=_scan_open,
+            ):
+                st.caption(
+                    "After generation, the vision model reads **this PNG** (with composited logo) and scores "
+                    "how well it matches your context, cleaned sources, and the prompt from the **last successful** "
+                    "single-mode run. Enables one-click edits for the next generation."
+                )
+                scan_ctx_raw = st.session_state.get("last_refinements_scan_context") or {}
+                scan_ctx: dict[str, str] = {
+                    str(k): str(v) if v is not None else ""
+                    for k, v in scan_ctx_raw.items()
+                }
+                if not scan_ctx.get("effective_prompt_excerpt", "").strip():
+                    st.warning(
+                        "Generate once in single mode so the app can snapshot your prompt "
+                        "and sources for this scan."
+                    )
+                scan_allow = st.checkbox(
+                    "Run refinements scan (uses API credits)",
+                    value=False,
+                    key="refinements_scan_allow",
+                )
+                if st.button(
+                    "Run refinements scan",
+                    key="btn_refinements_scan",
+                    disabled=not scan_allow,
+                ):
+                    ok_s, err_s, client_s, _im_s, _cm_s = get_credentials()
+                    if not ok_s or client_s is None:
+                        st.error(err_s or "Configure API keys for refinements scan.")
+                    elif not st.session_state.get("last_image_bytes"):
+                        st.error("Generate an image first.")
+                    else:
+                        try:
+                            with st.spinner("Scanning infographic with vision model…"):
+                                scan_result = run_refinements_scan_vision(
+                                    client_s,
+                                    get_vision_model_name(),
+                                    st.session_state.last_image_bytes,
+                                    scan_ctx,
+                                )
+                            st.session_state.last_refinements_scan = scan_result
+                            audit_log(
+                                session_id,
+                                provider,
+                                selected_style_key,
+                                audience,
+                                True,
+                                0,
+                                "refinements_scan_vision",
+                            )
+                            st.success("Refinements scan complete.")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(user_friendly_error(ex))
+
+                scan_data = st.session_state.get("last_refinements_scan")
+                if isinstance(scan_data, dict) and scan_data:
+                    lg = scan_data.get("letter_grade") or "?"
+                    st.markdown(f"#### Letter grade: **{lg}**")
+                    if (scan_data.get("alignment_summary") or "").strip():
+                        st.markdown("**Summary**")
+                        st.markdown(scan_data["alignment_summary"])
+                    scorecard = scan_data.get("scorecard") or {}
+                    if isinstance(scorecard, dict) and scorecard:
+                        st.markdown("**Scorecard**")
+                        labels = {
+                            "factual_fidelity": "Factual fidelity",
+                            "audience_fit": "Audience fit",
+                            "text_density": "Text density",
+                            "visual_hierarchy": "Visual hierarchy",
+                            "style_fidelity": "Style fidelity",
+                            "footer_logo_safety": "Footer/logo safety",
+                        }
+                        for key, label in labels.items():
+                            item = scorecard.get(key) or scorecard.get(label) or {}
+                            if isinstance(item, dict):
+                                score = str(item.get("score") or "?").strip()
+                                note = str(item.get("note") or "").strip()
+                            else:
+                                score = str(item or "?").strip()
+                                note = ""
+                            if score or note:
+                                st.markdown(f"- **{label}: {score or '?'}**" + (f" — {note}" if note else ""))
+                    if scan_data.get("strengths"):
+                        st.markdown("**Strengths**")
+                        for s in scan_data["strengths"]:
+                            st.markdown(f"- {s}")
+                    if scan_data.get("issues"):
+                        st.markdown("**Issues**")
+                        for s in scan_data["issues"]:
+                            st.markdown(f"- {s}")
+                    if (scan_data.get("fidelity_notes") or "").strip():
+                        st.markdown("**Source / number fidelity**")
+                        st.markdown(scan_data["fidelity_notes"])
+                    st.markdown("**Recommended refinements (next prompt)**")
+                    for r in scan_data.get("recommended_refinements") or []:
                         st.markdown(f"- {r}")
+                    if scan_data.get("prompt_edits"):
+                        st.markdown("**Concrete prompt edits**")
+                        for r in scan_data.get("prompt_edits") or []:
+                            st.markdown(f"- {r}")
 
-                apply_txt = format_refinements_scan_for_notes(scan_data)
-                ap1, ap2 = st.columns(2)
-                with ap1:
-                    if st.button(
-                        "Apply refinements to notes field",
-                        key="btn_apply_scan_notes",
-                        use_container_width=True,
-                        type="secondary",
-                    ):
-                        st.session_state.refinement_notes = apply_txt
-                        st.session_state.refinement_loop_area = apply_txt
-                        st.success("Copied into refinement notes (scroll down to edit if needed).")
-                with ap2:
-                    if st.button(
-                        "Apply refinements & generate now",
-                        key="btn_apply_scan_generate",
-                        use_container_width=True,
-                        type="primary",
-                    ):
-                        st.session_state.refinement_notes = apply_txt
-                        st.session_state.refinement_loop_area = apply_txt
-                        st.session_state.refine_generate_now = True
-                        st.rerun()
+                    apply_txt = format_refinements_scan_for_notes(scan_data)
+                    ap1, ap2 = st.columns(2)
+                    with ap1:
+                        if st.button(
+                            "Apply refinements to notes field",
+                            key="btn_apply_scan_notes",
+                            use_container_width=True,
+                            type="secondary",
+                        ):
+                            st.session_state.refinement_notes = apply_txt
+                            st.session_state.refinement_loop_area = apply_txt
+                            st.success("Copied into refinement notes (scroll down to edit if needed).")
+                    with ap2:
+                        if st.button(
+                            "Apply refinements & generate now",
+                            key="btn_apply_scan_generate",
+                            use_container_width=True,
+                            type="primary",
+                        ):
+                            st.session_state.refinement_notes = apply_txt
+                            st.session_state.refinement_loop_area = apply_txt
+                            st.session_state.refine_generate_now = True
+                            st.rerun()
 
-        refinement = st.text_area(
-            "Refinement notes (next generation)",
-            key="refinement_loop_area",
-            height=90,
-            placeholder=(
-                "e.g. Make title larger, reduce paragraph text by 30%, keep chart values exact, "
-                "and emphasize the screening workflow."
-            ),
-        )
-        st.caption("Tip: include what to change, what to keep fixed, and which section it applies to.")
-        if st.session_state.get("last_guided_refine_plan", "").strip():
-            with st.expander("Latest guided refinement plan", expanded=False):
-                st.code(st.session_state.get("last_guided_refine_plan", ""))
-        rb1, rb2 = st.columns(2)
-        with rb1:
+            refinement = st.text_area(
+                "Refinement notes (next generation)",
+                key="refinement_loop_area",
+                height=90,
+                placeholder=(
+                    "e.g. Make title larger, reduce paragraph text by 30%, keep chart values exact, "
+                    "and emphasize the screening workflow."
+                ),
+            )
+            st.caption("Tip: include what to change, what to keep fixed, and which section it applies to.")
+            if st.session_state.get("last_guided_refine_plan", "").strip():
+                with st.expander("Latest guided refinement plan", expanded=False):
+                    st.code(st.session_state.get("last_guided_refine_plan", ""))
+            rb1, rb2 = st.columns(2)
+            with rb1:
+                if st.button(
+                    "🔁 Save refinement notes",
+                    key="btn_refine",
+                    type="secondary",
+                    help="Applies your notes to the next prompt.",
+                    use_container_width=True,
+                ):
+                    st.session_state.refinement_notes = refinement
+            with rb2:
+                if st.button(
+                    "⚡ Save + Generate now",
+                    key="btn_refine_generate_now",
+                    type="primary",
+                    help="Saves notes and immediately starts a new generation.",
+                    use_container_width=True,
+                ):
+                    st.session_state.refinement_notes = refinement
+                    st.session_state.refine_generate_now = True
             if st.button(
-                "🔁 Save refinement notes",
-                key="btn_refine",
+                "🧭 Guided refine (use current image)",
+                key="btn_guided_refine_generate",
                 type="secondary",
-                help="Applies your notes to the next prompt.",
+                help="Uses the current image plus your notes to build a structured edit plan, then regenerates.",
                 use_container_width=True,
             ):
-                st.session_state.refinement_notes = refinement
-        with rb2:
-            if st.button(
-                "⚡ Save + Generate now",
-                key="btn_refine_generate_now",
-                type="primary",
-                help="Saves notes and immediately starts a new generation.",
-                use_container_width=True,
-            ):
-                st.session_state.refinement_notes = refinement
-                st.session_state.refine_generate_now = True
-        if st.button(
-            "🧭 Guided refine (use current image)",
-            key="btn_guided_refine_generate",
-            type="secondary",
-            help="Uses the current image plus your notes to build a structured edit plan, then regenerates.",
-            use_container_width=True,
-        ):
-            if not refinement.strip():
-                st.warning("Add refinement notes first, then run guided refine.")
-            else:
-                ok_g, err_g, client_g, _im_g, _cm_g = get_credentials()
-                if not ok_g or client_g is None:
-                    st.error(err_g or "Configure API credentials first.")
-                elif not st.session_state.get("last_image_bytes"):
-                    st.error("Generate an image first so guided refine can analyze it.")
+                if not refinement.strip():
+                    st.warning("Add refinement notes first, then run guided refine.")
                 else:
-                    try:
-                        plan = build_guided_refinement_notes(
-                            client=client_g,
-                            vision_model=get_vision_model_name(),
-                            current_image_bytes=st.session_state.last_image_bytes,
-                            user_notes=refinement,
-                            audience=audience,
-                        )
-                        st.session_state.last_guided_refine_plan = plan
-                        st.session_state.refinement_notes = (
-                            f"{refinement.strip()}\n\n[GUIDED REFINEMENT PLAN]\n{plan}"
-                        )
-                        st.session_state.refine_generate_now = True
-                        st.rerun()
-                    except Exception as ex:
-                        st.error(user_friendly_error(ex))
-        st.caption(
-            "Guided refine uses vision-guided prompt refinement from the current image "
-            "(not direct image-edit endpoint replacement)."
-        )
+                    ok_g, err_g, client_g, _im_g, _cm_g = get_credentials()
+                    if not ok_g or client_g is None:
+                        st.error(err_g or "Configure API credentials first.")
+                    elif not st.session_state.get("last_image_bytes"):
+                        st.error("Generate an image first so guided refine can analyze it.")
+                    else:
+                        try:
+                            plan = build_guided_refinement_notes(
+                                client=client_g,
+                                vision_model=get_vision_model_name(),
+                                current_image_bytes=st.session_state.last_image_bytes,
+                                user_notes=refinement,
+                                audience=audience,
+                            )
+                            st.session_state.last_guided_refine_plan = plan
+                            st.session_state.refinement_notes = (
+                                f"{refinement.strip()}\n\n[GUIDED REFINEMENT PLAN]\n{plan}"
+                            )
+                            st.session_state.refine_generate_now = True
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(user_friendly_error(ex))
+            st.caption(
+                "Guided refine uses vision-guided prompt refinement from the current image "
+                "(not direct image-edit endpoint replacement)."
+            )
 
     # ── Output: audience contact sheet ──
     if st.session_state.audience_results and mode == "audiences":
