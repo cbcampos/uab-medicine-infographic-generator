@@ -879,7 +879,12 @@ def main() -> None:
     step2_open = bool(st.session_state.get("docs_uploader"))
     step3_open = False
 
-    with st.expander("Step 1: Add sources and topic", expanded=step1_open):
+    step1_title = (
+        "Step 1: Set up your infographic"
+        if production_simple_ui
+        else "Step 1: Add sources and topic"
+    )
+    with st.expander(step1_title, expanded=step1_open):
         col_main, col_doc = st.columns([1, 1])
 
         with col_main:
@@ -1920,7 +1925,7 @@ def main() -> None:
             credential_issue = "Gemini API key is missing."
 
     generate_btn = False
-    step3_title = "Step 3: Generate"
+    step3_title = "Step 2: Generate" if production_simple_ui else "Step 3: Generate"
     with st.expander(step3_title, expanded=True):
         if experience_mode == "basic":
             st.markdown(
