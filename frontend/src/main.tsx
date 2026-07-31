@@ -11,6 +11,7 @@ import {
   PlusCircle,
   RotateCcw,
   Trash2,
+  Undo2,
   Upload,
   X
 } from "lucide-react";
@@ -67,6 +68,10 @@ type EditPin = {
 };
 
 type EditMode = "pin" | "paint";
+type PaintHistoryEntry = {
+  imageUrl: string;
+  wasDirty: boolean;
+};
 
 const initialConfig: AppConfig = {
   audiences: [],
@@ -117,10 +122,13 @@ function App() {
   const [editMode, setEditMode] = useState<EditMode>("pin");
   const [brushSize, setBrushSize] = useState(56);
   const [maskDirty, setMaskDirty] = useState(false);
+  const [paintUndoCount, setPaintUndoCount] = useState(0);
+  const [brushPreview, setBrushPreview] = useState({ x: 0, y: 0, visible: false });
   const [showStyleGuide, setShowStyleGuide] = useState(false);
   const mainRef = useRef<HTMLElement | null>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const drawingRef = useRef(false);
+  const paintHistoryRef = useRef<PaintHistoryEntry[]>([]);
 
   useEffect(() => {
     fetch("/api/config")
@@ -178,7 +186,7 @@ function App() {
     setError("");
     setResult(null);
     setPins([]);
-    clearPaintMask();
+    clearPaintMask(false);
     setIsGenerating(true);
 
     const form = new FormData();
@@ -237,7 +245,7 @@ function App() {
       const started = await readJsonResponse<GenerateJobStartResponse>(startResponse);
       setResult(await pollJob(started.jobId));
       setPins([]);
-      clearPaintMask();
+      clearPaintMask(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Revision failed.");
     } finally {
@@ -287,6 +295,8 @@ function App() {
     if (canvas.width === image.naturalWidth && canvas.height === image.naturalHeight) return;
     canvas.width = image.naturalWidth;
     canvas.height = image.naturalHeight;
+    paintHistoryRef.current = [];
+    setPaintUndoCount(0);
     setMaskDirty(false);
   }
 
@@ -321,11 +331,30 @@ function App() {
     setMaskDirty(true);
   }
 
+  function updateBrushPreview(event: React.PointerEvent<HTMLCanvasElement>, visible = true) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setBrushPreview({
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      visible
+    });
+  }
+
+  function savePaintHistory(canvas: HTMLCanvasElement) {
+    paintHistoryRef.current = [
+      ...paintHistoryRef.current.slice(-19),
+      { imageUrl: canvas.toDataURL("image/png"), wasDirty: maskDirty }
+    ];
+    setPaintUndoCount(paintHistoryRef.current.length);
+  }
+
   function startPainting(event: React.PointerEvent<HTMLCanvasElement>) {
     if (editMode !== "paint" || isWorking) return;
     event.preventDefault();
     event.stopPropagation();
     drawingRef.current = true;
+    savePaintHistory(event.currentTarget);
+    updateBrushPreview(event);
     event.currentTarget.setPointerCapture(event.pointerId);
     const ctx = event.currentTarget.getContext("2d");
     const point = canvasPoint(event);
@@ -338,7 +367,16 @@ function App() {
     if (!drawingRef.current || editMode !== "paint" || isWorking) return;
     event.preventDefault();
     event.stopPropagation();
+    updateBrushPreview(event);
     paintAt(event);
+  }
+
+  function movePaintPointer(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (editMode !== "paint" || isWorking) return;
+    updateBrushPreview(event);
+    if (drawingRef.current) {
+      continuePainting(event);
+    }
   }
 
   function stopPainting(event: React.PointerEvent<HTMLCanvasElement>) {
@@ -349,13 +387,45 @@ function App() {
     event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
-  function clearPaintMask() {
+  function hideBrushPreview() {
+    setBrushPreview((current) => ({ ...current, visible: false }));
+  }
+
+  function undoPaintStroke() {
+    const canvas = maskCanvasRef.current;
+    const previous = paintHistoryRef.current.pop();
+    if (!canvas || !previous) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const image = new Image();
+    image.onload = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      setMaskDirty(previous.wasDirty);
+      setPaintUndoCount(paintHistoryRef.current.length);
+    };
+    image.src = previous.imageUrl;
+  }
+
+  function clearPaintMask(saveHistory = true) {
     const canvas = maskCanvasRef.current;
     if (canvas) {
       const ctx = canvas.getContext("2d");
+      if (saveHistory && maskDirty) {
+        savePaintHistory(canvas);
+      }
       ctx?.clearRect(0, 0, canvas.width, canvas.height);
     }
+    if (!saveHistory) {
+      paintHistoryRef.current = [];
+      setPaintUndoCount(0);
+    }
     setMaskDirty(false);
+  }
+
+  function startAnotherEditPin() {
+    if (!result || isWorking) return;
+    setEditMode("pin");
   }
 
   function getPaintMaskBase64(): string {
@@ -558,6 +628,10 @@ function App() {
                   <p>Pin comments describe what to change. Painting optionally marks the exact edit area.</p>
                 </div>
                 <div className="edit-actions">
+                  <button type="button" className="secondary-button" onClick={startAnotherEditPin} disabled={!result || isWorking}>
+                    <PlusCircle aria-hidden="true" />
+                    Add edit pin
+                  </button>
                   <button type="button" className="secondary-button" onClick={() => setPins([])} disabled={!pins.length || isWorking}>
                     <RotateCcw aria-hidden="true" />
                     Clear pins
@@ -625,13 +699,17 @@ function App() {
                         disabled={isWorking}
                       />
                     </label>
-                    <button type="button" className="secondary-button" onClick={clearPaintMask} disabled={!maskDirty || isWorking}>
+                    <button type="button" className="secondary-button" onClick={() => clearPaintMask()} disabled={!maskDirty || isWorking}>
                       Clear painted area
+                    </button>
+                    <button type="button" className="secondary-button" onClick={undoPaintStroke} disabled={!paintUndoCount || isWorking}>
+                      <Undo2 aria-hidden="true" />
+                      Undo paint
                     </button>
                     <span>{maskDirty ? "Painted area will scope the edit." : "Paint over the part to revise."}</span>
                   </div>
                 ) : (
-                  <p>Click the infographic to add a numbered pin, then write the edit below.</p>
+                  <p>Each edit starts as a numbered pin. Click the infographic to add another pin, then write the edit below.</p>
                 )}
               </div>
 
@@ -659,11 +737,25 @@ function App() {
                   className="paint-mask-canvas"
                   aria-hidden="true"
                   onPointerDown={startPainting}
-                  onPointerMove={continuePainting}
+                  onPointerEnter={(event) => updateBrushPreview(event)}
+                  onPointerMove={movePaintPointer}
                   onPointerUp={stopPainting}
                   onPointerCancel={stopPainting}
+                  onPointerLeave={hideBrushPreview}
                   onClick={(event) => event.stopPropagation()}
                 />
+                {editMode === "paint" && brushPreview.visible ? (
+                  <span
+                    className="brush-preview"
+                    style={{
+                      left: brushPreview.x,
+                      top: brushPreview.y,
+                      width: brushSize,
+                      height: brushSize
+                    }}
+                    aria-hidden="true"
+                  />
+                ) : null}
                 {pins.map((pin, index) => (
                   <button
                     type="button"
