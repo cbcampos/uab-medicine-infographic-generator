@@ -66,6 +66,7 @@ class GenerationResult:
     image_bytes: bytes
     filename: str
     prompt_sha256: str
+    prompt_text: str
     structured_brief_sha256: str
     inferred_profile: dict[str, Any]
 
@@ -296,6 +297,7 @@ def generate_infographic(
         image_bytes=image_bytes,
         filename=filename,
         prompt_sha256=prompt_sha,
+        prompt_text=effective_prompt,
         structured_brief_sha256=structured_hash,
         inferred_profile=inferred_profile,
     )

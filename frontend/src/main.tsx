@@ -38,6 +38,7 @@ type GenerateResponse = {
   imageBase64: string;
   filename: string;
   promptSha256: string;
+  promptText: string;
   structuredBriefSha256: string;
   topic: string;
   citation: string;
@@ -373,6 +374,16 @@ function App() {
                 <span>Structured brief: {result.structuredBriefSha256.slice(0, 12)}</span>
               ) : null}
             </div>
+            {result.promptText ? (
+              <details className="expert-info">
+                <summary>Expert info: exact image prompt used</summary>
+                <p>
+                  This is the final prompt sent for the displayed graphic after planning and prompt
+                  optimization.
+                </p>
+                <textarea readOnly value={result.promptText} rows={14} aria-label="Exact image prompt used" />
+              </details>
+            ) : null}
           </section>
         ) : null}
       </main>

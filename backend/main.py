@@ -40,6 +40,7 @@ class GenerateResponse(BaseModel):
     imageBase64: str
     filename: str
     promptSha256: str
+    promptText: str
     structuredBriefSha256: str
     topic: str
     citation: str
@@ -108,6 +109,7 @@ def _generate_response_from_inputs(
         imageBase64=base64.b64encode(result.image_bytes).decode("ascii"),
         filename=result.filename,
         promptSha256=result.prompt_sha256,
+        promptText=result.prompt_text,
         structuredBriefSha256=result.structured_brief_sha256,
         topic=topic,
         citation=citation,
