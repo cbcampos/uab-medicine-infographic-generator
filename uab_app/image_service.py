@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 import httpx
 from openai import APITimeoutError, AzureOpenAI, OpenAI
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw
 
 from uab_app.constants import (
     AUDIENCE_SECTION_PLANS,
@@ -347,6 +347,163 @@ def generate_image(
     raise RuntimeError("No image payload returned.")
 
 
+def _logo_safe_zone_box(width: int, height: int) -> tuple[int, int, int, int]:
+    safe_w = min(
+        int(width * LOGO_SAFE_ZONE_MAX_WIDTH_RATIO),
+        max(LOGO_SAFE_ZONE_MIN_WIDTH, int(width * LOGO_SAFE_ZONE_WIDTH_RATIO)),
+    )
+    safe_h = min(
+        int(height * LOGO_SAFE_ZONE_MAX_HEIGHT_RATIO),
+        max(LOGO_SAFE_ZONE_MIN_HEIGHT, int(height * LOGO_SAFE_ZONE_HEIGHT_RATIO)),
+    )
+    margin_x = max(int(width * LOGO_SAFE_ZONE_RIGHT_MARGIN_RATIO), 0)
+    margin_y = max(int(height * LOGO_SAFE_ZONE_BOTTOM_MARGIN_RATIO), 0)
+    safe_x0 = max(0, width - margin_x - safe_w)
+    safe_y0 = max(0, height - margin_y - safe_h)
+    safe_x1 = min(width, safe_x0 + safe_w)
+    safe_y1 = min(height, safe_y0 + safe_h)
+    return safe_x0, safe_y0, safe_x1, safe_y1
+
+
+def remove_logo_safe_zone_for_edit(image_bytes: bytes) -> bytes:
+    """Replace the composited logo area before model editing, then reapply our logo later."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    x0, y0, x1, y1 = _logo_safe_zone_box(*img.size)
+    img.alpha_composite(Image.new("RGBA", (x1 - x0, y1 - y0), (255, 255, 255, 255)), (x0, y0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def build_pin_edit_mask(
+    image_bytes: bytes,
+    pinned_comments: list[dict[str, object]],
+    paint_mask_bytes: bytes | None = None,
+) -> bytes:
+    """Create an alpha mask for localized image edits around pins and painted regions."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    width, height = img.size
+    mask = Image.new("RGBA", (width, height), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(mask)
+    base_radius = max(76, int(min(width, height) * 0.075))
+
+    for pin in pinned_comments:
+        comment = str(pin.get("comment") or "").strip().lower()
+        if not comment:
+            continue
+        try:
+            x_pct = min(100.0, max(0.0, float(pin.get("xPercent", 0))))
+            y_pct = min(100.0, max(0.0, float(pin.get("yPercent", 0))))
+        except (TypeError, ValueError):
+            continue
+        radius = base_radius
+        if any(term in comment for term in ("larger", "bigger", "expand", "move", "spacing", "reduce text")):
+            radius = int(radius * 1.45)
+        x = int(width * (x_pct / 100.0))
+        y = int(height * (y_pct / 100.0))
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=(0, 0, 0, 0))
+
+    if paint_mask_bytes:
+        paint = Image.open(io.BytesIO(paint_mask_bytes)).convert("RGBA")
+        if paint.size != (width, height):
+            paint = paint.resize((width, height), Image.Resampling.NEAREST)
+        paint_alpha = paint.getchannel("A")
+        paint_edit_alpha = paint_alpha.point(lambda a: 0 if a > 8 else 255)
+        combined_alpha = ImageChops.multiply(mask.getchannel("A"), paint_edit_alpha)
+        mask.putalpha(combined_alpha)
+
+    # Never let the edit model alter the app-composited logo zone.
+    x0, y0, x1, y1 = _logo_safe_zone_box(width, height)
+    draw.rectangle((x0, y0, x1, y1), fill=(255, 255, 255, 255))
+
+    buf = io.BytesIO()
+    mask.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def edit_image_with_mask(
+    client: OpenAI | AzureOpenAI,
+    provider: str,
+    model: str,
+    image_bytes: bytes,
+    mask_bytes: bytes,
+    prompt: str,
+    size: str,
+    quality: str,
+) -> str:
+    """Apply a localized image edit using the image edits endpoint."""
+    if provider != "azure":
+        resp = client.images.edit(
+            model=model,
+            image=io.BytesIO(image_bytes),
+            mask=io.BytesIO(mask_bytes),
+            prompt=prompt,
+            size=_openai_size_map(size),
+            quality=quality,
+            n=1,
+        )
+        image_data = resp.data[0]
+        if getattr(image_data, "url", None):
+            return str(image_data.url)
+        if getattr(image_data, "b64_json", None):
+            return f"data:image/png;base64,{image_data.b64_json}"
+        raise RuntimeError("No edited image payload returned.")
+
+    azure_endpoint = str(getattr(client, "_azure_endpoint", "")).rstrip("/")
+    image_api_version = os.environ.get(
+        "AZURE_OPENAI_IMAGE_EDIT_API_VERSION",
+        AZURE_API_VERSION_LOCKED,
+    ).strip() or AZURE_API_VERSION_LOCKED
+    req_url = (
+        f"{azure_endpoint}/openai/deployments/{model}/images/edits"
+        f"?api-version={image_api_version}"
+    )
+    edit_prompt = optimize_azure_image_prompt(prompt, AZURE_IMAGE_PROMPT_MAX_CHARS - AZURE_IMAGE_PROMPT_SAFETY_MARGIN)
+    timeout = httpx.Timeout(
+        connect=20.0,
+        read=float(AZURE_IMAGE_READ_TIMEOUT_S),
+        write=60.0,
+        pool=30.0,
+    )
+    data = {
+        "prompt": edit_prompt,
+        "size": size if size in ("1024x1024", "1024x1792", "1792x1024") else "1792x1024",
+        "quality": quality,
+        "output_compression": "100",
+        "output_format": "png",
+        "n": "1",
+    }
+    files = {
+        "image": ("infographic.png", image_bytes, "image/png"),
+        "mask": ("mask.png", mask_bytes, "image/png"),
+    }
+    with httpx.Client(timeout=timeout) as http_client:
+        resp_http = http_client.post(
+            req_url,
+            headers={"Authorization": f"Bearer {client.api_key}"},
+            data=data,
+            files=files,
+        )
+    if resp_http.status_code >= 400:
+        msg = resp_http.text[:500].replace("\n", " ")
+        raise RuntimeError(
+            f"Azure image edit failed (HTTP {resp_http.status_code}) "
+            f"for deployment '{model}': {msg}"
+        )
+    payload = resp_http.json()
+    data_items = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data_items, list) or not data_items:
+        raise RuntimeError(f"Azure image edit returned no image payload for deployment '{model}'.")
+    first = data_items[0] if isinstance(data_items[0], dict) else {}
+    b64 = first.get("b64_json")
+    url = first.get("url")
+    if b64:
+        return f"data:image/png;base64,{b64}"
+    if url:
+        return str(url)
+    raise RuntimeError(f"Azure image edit returned data without b64_json/url for deployment '{model}'.")
+
+
 def user_friendly_error(exc: BaseException) -> str:
     if isinstance(exc, APITimeoutError):
         return "The image request timed out. Try again in a moment or simplify your prompt."
@@ -673,20 +830,9 @@ def composite_logo_footer(image_bytes: bytes, logo_path: Path, style_key: str = 
     logo = Image.open(logo_path).convert("RGBA")
     w, h = img.size
 
-    safe_w = min(
-        int(w * LOGO_SAFE_ZONE_MAX_WIDTH_RATIO),
-        max(LOGO_SAFE_ZONE_MIN_WIDTH, int(w * LOGO_SAFE_ZONE_WIDTH_RATIO)),
-    )
-    safe_h = min(
-        int(h * LOGO_SAFE_ZONE_MAX_HEIGHT_RATIO),
-        max(LOGO_SAFE_ZONE_MIN_HEIGHT, int(h * LOGO_SAFE_ZONE_HEIGHT_RATIO)),
-    )
-    margin_x = max(int(w * LOGO_SAFE_ZONE_RIGHT_MARGIN_RATIO), 0)
-    margin_y = max(int(h * LOGO_SAFE_ZONE_BOTTOM_MARGIN_RATIO), 0)
-    safe_x0 = max(0, w - margin_x - safe_w)
-    safe_y0 = max(0, h - margin_y - safe_h)
-    safe_x1 = min(w, safe_x0 + safe_w)
-    safe_y1 = min(h, safe_y0 + safe_h)
+    safe_x0, safe_y0, safe_x1, safe_y1 = _logo_safe_zone_box(w, h)
+    safe_w = safe_x1 - safe_x0
+    safe_h = safe_y1 - safe_y0
 
     pad = max(int(min(safe_w, safe_h) * LOGO_SAFE_ZONE_PADDING_RATIO), 8)
     max_logo_w = max(1, min(safe_w - (2 * pad), int(safe_w * LOGO_SAFE_ZONE_LOGO_WIDTH_RATIO)))

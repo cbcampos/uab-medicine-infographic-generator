@@ -22,11 +22,15 @@ from uab_app.constants import ALLOWED_UPLOAD_EXTENSIONS, MAX_UPLOAD_BYTES
 from uab_app.image_service import (
     AZURE_IMAGE_PROMPT_MAX_CHARS,
     AZURE_IMAGE_PROMPT_SAFETY_MARGIN,
+    build_pin_edit_mask,
+    build_guided_refinement_notes,
     composite_logo_footer,
+    edit_image_with_mask,
     fetch_image_bytes,
     generate_with_retry,
     make_client,
     optimize_azure_image_prompt,
+    remove_logo_safe_zone_for_edit,
     resolve_logo_path,
 )
 from uab_app.parsers import extract_document_text
@@ -66,6 +70,7 @@ class GenerationResult:
     image_bytes: bytes
     filename: str
     prompt_sha256: str
+    prompt_text: str
     structured_brief_sha256: str
     inferred_profile: dict[str, Any]
 
@@ -177,6 +182,7 @@ def generate_infographic(
     style_id: str,
     user_context: str,
     files: list[SourceUpload],
+    refinement_notes: str = "",
     session_id: str | None = None,
 ) -> GenerationResult:
     if audience not in AUDIENCE_KEYS:
@@ -232,7 +238,7 @@ def generate_infographic(
             style_id=style_id,
             inferred_profile=inferred_profile,
             chart_reference_block="",
-            refinement_notes="",
+            refinement_notes=refinement_notes,
         )
         structured_brief_block = format_structured_brief_for_prompt(brief)
         structured_hash = structured_brief_sha256(structured_brief_block)
@@ -252,7 +258,7 @@ def generate_infographic(
         sanitized_context,
         cleaned_docs,
         audience,
-        "",
+        refinement_notes,
         logo_extra,
         chart_reference_block="",
         inferred_profile=inferred_profile,
@@ -296,6 +302,153 @@ def generate_infographic(
         image_bytes=image_bytes,
         filename=filename,
         prompt_sha256=prompt_sha,
+        prompt_text=effective_prompt,
         structured_brief_sha256=structured_hash,
         inferred_profile=inferred_profile,
+    )
+
+
+def revise_infographic_with_pins(
+    *,
+    audience: str,
+    style_id: str,
+    user_context: str,
+    files: list[SourceUpload],
+    current_image_bytes: bytes,
+    pinned_comments: list[dict[str, object]],
+    paint_mask_bytes: bytes | None = None,
+    current_topic: str = "",
+    current_citation: str = "",
+    session_id: str | None = None,
+) -> GenerationResult:
+    if not pinned_comments:
+        raise ValueError("Add at least one pinned edit comment before applying edits.")
+
+    pin_lines: list[str] = []
+    for index, pin in enumerate(pinned_comments, start=1):
+        try:
+            x_pct = float(pin.get("xPercent", 0))
+            y_pct = float(pin.get("yPercent", 0))
+        except (TypeError, ValueError):
+            x_pct = 0
+            y_pct = 0
+        comment = str(pin.get("comment") or "").strip()
+        if not comment:
+            continue
+        pin_lines.append(f"{index}. (x: {x_pct:.1f}%, y: {y_pct:.1f}%) {comment}")
+    if not pin_lines:
+        raise ValueError("Pinned edits need comment text.")
+
+    pinned_block = "Image 1 pinned edit requests:\n" + "\n".join(pin_lines)
+    api_key, endpoint, image_model, chat_model = validate_azure_config()
+    vision_model = os.environ.get("AZURE_OPENAI_VISION_DEPLOYMENT", chat_model).strip() or chat_model
+    client = make_client("azure", api_key, endpoint, "2024-02-01")
+
+    try:
+        guided_notes = build_guided_refinement_notes(
+            client=client,
+            vision_model=vision_model,
+            current_image_bytes=current_image_bytes,
+            user_notes=pinned_block,
+            audience=audience,
+        )
+    except Exception:
+        guided_notes = ""
+
+    refinement_notes = "\n\n".join(
+        part
+        for part in [
+            "This is a revision pass for a previously generated infographic.",
+            pinned_block,
+            "Preserve the successful overall topic, citation, audience, visual style, footer, and UAB logo safe area.",
+            "Apply the requested edits at the indicated normalized image coordinates. Treat coordinates as anchors; adjust surrounding layout if needed.",
+            guided_notes,
+        ]
+        if part.strip()
+    )
+
+    edit_prompt = "\n".join(
+        [
+            "You are editing a UAB Medicine scientific infographic image.",
+            "Apply only the pinned edit requests below, using the coordinates as visual anchors.",
+            "If a painted mask is provided, treat the painted region as the exact scope for the requested local edit.",
+            "Preserve the existing scientific topic, layout logic, source citation, audience framing, and visual style unless a pinned request specifically changes that local area.",
+            "Do not invent new data, new citations, new recommendations, or unsupported numbers.",
+            "Keep the bottom-right logo/footer area clean and empty; the approved UAB Medicine logo will be composited by the application after this edit.",
+            "Return a complete polished infographic image, not an explanation.",
+            "",
+            pinned_block,
+            "",
+            "Vision-derived implementation notes:",
+            guided_notes,
+        ]
+    ).strip()
+
+    try:
+        editable_image_bytes = remove_logo_safe_zone_for_edit(current_image_bytes)
+        mask_bytes = build_pin_edit_mask(editable_image_bytes, pinned_comments, paint_mask_bytes)
+        image_ref = edit_image_with_mask(
+            client=client,
+            provider="azure",
+            model=image_model,
+            image_bytes=editable_image_bytes,
+            mask_bytes=mask_bytes,
+            prompt=edit_prompt,
+            size="1792x1024",
+            quality="high",
+        )
+        edited_bytes = fetch_image_bytes(image_ref)
+        logo_path = resolve_logo_path()
+        if logo_path:
+            edited_bytes = composite_logo_footer(edited_bytes, logo_path, style_id)
+        prompt_sha = hashlib.sha256(edit_prompt.encode("utf-8")).hexdigest()
+        result_profile = {
+            "topic": current_topic.strip() or "Edited infographic",
+            "citation_footer": current_citation.strip(),
+            "citation_title": current_topic.strip(),
+        }
+        base = download_basename_from_profile(result_profile, user_context)
+        audit_log(
+            session_id or str(uuid.uuid4()),
+            "azure",
+            style_id,
+            audience,
+            True,
+            0,
+            "react_image_edit",
+            {
+                "edit_mode": "masked_image_edit",
+                "prompt_sha256": prompt_sha,
+                "pin_count": len(pin_lines),
+            },
+        )
+        return GenerationResult(
+            image_bytes=edited_bytes,
+            filename=png_filename(base, style_id, audience, "edited"),
+            prompt_sha256=prompt_sha,
+            prompt_text=edit_prompt,
+            structured_brief_sha256="image-edit",
+            inferred_profile=result_profile,
+        )
+    except Exception:
+        # Some Azure image deployments/proxies support generation before edits. Preserve
+        # the UX by falling back to a full revision generation using the same pinned notes.
+        pass
+
+    result = generate_infographic(
+        audience=audience,
+        style_id=style_id,
+        user_context=user_context,
+        files=files,
+        refinement_notes=refinement_notes,
+        session_id=session_id,
+    )
+    base = download_basename_from_profile(result.inferred_profile, user_context)
+    return GenerationResult(
+        image_bytes=result.image_bytes,
+        filename=png_filename(base, style_id, audience, "edited"),
+        prompt_sha256=result.prompt_sha256,
+        prompt_text=result.prompt_text,
+        structured_brief_sha256=result.structured_brief_sha256,
+        inferred_profile=result.inferred_profile,
     )

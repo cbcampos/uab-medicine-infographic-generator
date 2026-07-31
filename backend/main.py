@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import json
 import time
 import uuid
 from pathlib import Path
@@ -16,10 +17,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from uab_app.generation_pipeline import (
+    GenerationResult,
     SourceUpload,
     available_audiences,
     available_styles,
     generate_infographic,
+    revise_infographic_with_pins,
 )
 
 
@@ -40,6 +43,7 @@ class GenerateResponse(BaseModel):
     imageBase64: str
     filename: str
     promptSha256: str
+    promptText: str
     structuredBriefSha256: str
     topic: str
     citation: str
@@ -55,6 +59,13 @@ class GenerateJobStatusResponse(BaseModel):
     status: str
     result: GenerateResponse | None = None
     error: str | None = None
+
+
+class EditPin(BaseModel):
+    id: int | None = None
+    xPercent: float
+    yPercent: float
+    comment: str
 
 
 app = FastAPI(title="UAB Medicine Infographic Generator", version="2026.7.31")
@@ -101,6 +112,10 @@ def _generate_response_from_inputs(
         user_context=context,
         files=source_uploads,
     )
+    return _generate_response_from_result(result)
+
+
+def _generate_response_from_result(result: GenerationResult) -> GenerateResponse:
     profile = result.inferred_profile or {}
     citation = str(profile.get("citation_footer") or "").strip()
     topic = str(profile.get("topic") or profile.get("citation_title") or "Generated infographic").strip()
@@ -108,6 +123,7 @@ def _generate_response_from_inputs(
         imageBase64=base64.b64encode(result.image_bytes).decode("ascii"),
         filename=result.filename,
         promptSha256=result.prompt_sha256,
+        promptText=result.prompt_text,
         structuredBriefSha256=result.structured_brief_sha256,
         topic=topic,
         citation=citation,
@@ -141,6 +157,41 @@ async def _run_generation_job(
                 style=style,
                 context=context,
                 source_uploads=source_uploads,
+            )
+        )
+        _generation_jobs[job_id].update(status="succeeded", result=response, completed_at=time.time())
+    except Exception as exc:  # noqa: BLE001 - surface user-facing generation failure text
+        _generation_jobs[job_id].update(status="failed", error=str(exc), completed_at=time.time())
+
+
+async def _run_revision_job(
+    job_id: str,
+    *,
+    audience: str,
+    style: str,
+    context: str,
+    source_uploads: list[SourceUpload],
+    current_image_bytes: bytes,
+    pinned_comments: list[dict[str, object]],
+    paint_mask_bytes: bytes | None,
+    current_topic: str,
+    current_citation: str,
+) -> None:
+    _generation_jobs[job_id]["status"] = "running"
+    try:
+        response = await anyio.to_thread.run_sync(
+            lambda: _generate_response_from_result(
+                revise_infographic_with_pins(
+                    audience=audience,
+                    style_id=style,
+                    user_context=context,
+                    files=source_uploads,
+                    current_image_bytes=current_image_bytes,
+                    pinned_comments=pinned_comments,
+                    paint_mask_bytes=paint_mask_bytes,
+                    current_topic=current_topic,
+                    current_citation=current_citation,
+                )
             )
         )
         _generation_jobs[job_id].update(status="succeeded", result=response, completed_at=time.time())
@@ -200,6 +251,63 @@ async def start_generate_job(
             style=style,
             context=context,
             source_uploads=source_uploads,
+        )
+    )
+    return GenerateJobStartResponse(jobId=job_id, status="queued")
+
+
+@app.post("/api/revision-jobs", response_model=GenerateJobStartResponse)
+async def start_revision_job(
+    audience: Annotated[str, Form()],
+    style: Annotated[str, Form()],
+    context: Annotated[str, Form()] = "",
+    phiConfirmed: Annotated[bool, Form()] = False,
+    imageBase64: Annotated[str, Form()] = "",
+    pinsJson: Annotated[str, Form()] = "[]",
+    paintMaskBase64: Annotated[str, Form()] = "",
+    currentTopic: Annotated[str, Form()] = "",
+    currentCitation: Annotated[str, Form()] = "",
+    files: Annotated[list[UploadFile], File()] = [],
+) -> GenerateJobStartResponse:
+    if not phiConfirmed:
+        raise HTTPException(status_code=400, detail="Confirm that the content does not contain PHI.")
+
+    try:
+        current_image_bytes = base64.b64decode(imageBase64, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="The image to edit was not valid.") from exc
+
+    try:
+        parsed_pins = json.loads(pinsJson)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Pinned comments were not valid JSON.") from exc
+    if not isinstance(parsed_pins, list):
+        raise HTTPException(status_code=400, detail="Pinned comments must be a list.")
+    pins = [EditPin.model_validate(pin).model_dump() for pin in parsed_pins]
+
+    paint_mask_bytes = None
+    if paintMaskBase64.strip():
+        try:
+            paint_mask_bytes = base64.b64decode(paintMaskBase64, validate=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="The painted edit mask was not valid.") from exc
+
+    source_uploads = await _collect_source_uploads(files)
+    job_id = str(uuid.uuid4())
+    _prune_generation_jobs()
+    _generation_jobs[job_id] = {"status": "queued", "created_at": time.time()}
+    asyncio.create_task(
+        _run_revision_job(
+            job_id,
+            audience=audience,
+            style=style,
+            context=context,
+            source_uploads=source_uploads,
+            current_image_bytes=current_image_bytes,
+            pinned_comments=pins,
+            paint_mask_bytes=paint_mask_bytes,
+            current_topic=currentTopic,
+            current_citation=currentCitation,
         )
     )
     return GenerateJobStartResponse(jobId=job_id, status="queued")
