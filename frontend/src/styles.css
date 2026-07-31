@@ -120,10 +120,7 @@ a {
 }
 
 .hero-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 390px);
-  gap: 24px;
-  align-items: end;
+  display: block;
   margin-bottom: 24px;
 }
 
@@ -151,7 +148,6 @@ a {
   text-transform: uppercase;
 }
 
-.hero-note,
 .alert,
 .status-card,
 .result-card,
@@ -160,19 +156,6 @@ a {
   border: 1px solid var(--color-border-warm);
   border-radius: 12px;
   box-shadow: var(--shadow-card);
-}
-
-.hero-note {
-  padding: 18px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: var(--color-brand-green-dark);
-  line-height: 1.45;
-}
-
-.hero-note svg {
-  flex: 0 0 auto;
 }
 
 .alert {
@@ -192,9 +175,8 @@ a {
 
 .workflow-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
-  align-items: start;
 }
 
 .work-card {
@@ -205,17 +187,9 @@ a {
   min-width: 0;
 }
 
-.options-card {
-  position: sticky;
-  top: 98px;
-}
-
 .generate-card {
-  grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
-  gap: 20px;
-  align-items: center;
+  gap: 16px;
 }
 
 .section-heading {
@@ -296,6 +270,7 @@ fieldset {
 
 .choice-list {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -415,7 +390,7 @@ fieldset {
 }
 
 .secondary-button {
-  width: 100%;
+  width: fit-content;
   margin: 14px 0;
   padding: 0 17px;
   color: var(--color-ink);
@@ -429,7 +404,7 @@ fieldset {
 }
 
 .phi-box {
-  margin-top: 8px;
+  margin-top: 0;
   align-items: flex-start;
   line-height: 1.4;
   font-weight: 600;
@@ -668,13 +643,8 @@ fieldset {
     display: none;
   }
 
-  .hero-panel,
-  .workflow-grid {
+  .choice-list {
     grid-template-columns: 1fr;
-  }
-
-  .options-card {
-    position: static;
   }
 }
 
@@ -703,7 +673,6 @@ fieldset {
     padding: 18px;
   }
 
-  .generate-card,
   .result-header,
   .footer-brand {
     display: grid;

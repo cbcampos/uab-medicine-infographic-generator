@@ -8,8 +8,6 @@ import {
   ImageIcon,
   Info,
   Loader2,
-  Palette,
-  ShieldCheck,
   Upload,
   X
 } from "lucide-react";
@@ -152,10 +150,6 @@ function App() {
               UAB Medicine concept graphic for human review.
             </p>
           </div>
-          <div className="hero-note" role="note">
-            <ShieldCheck aria-hidden="true" />
-            <span>Azure generation is configured server-side. API credentials are never shown.</span>
-          </div>
         </section>
 
         {error ? (
@@ -215,12 +209,12 @@ function App() {
             ) : null}
           </section>
 
-          <aside className="work-card options-card" aria-labelledby="options-title">
-            <div className="section-heading compact">
-              <Palette aria-hidden="true" />
+          <section className="work-card options-card" aria-labelledby="options-title">
+            <div className="section-heading">
+              <span className="step-badge">Step 2</span>
               <div>
-                <h2 id="options-title">Audience and style</h2>
-                <p>Structured planning is applied automatically.</p>
+                <h2 id="options-title">Choose audience and style</h2>
+                <p>Select who the infographic is for and how it should look.</p>
               </div>
             </div>
 
@@ -258,7 +252,16 @@ function App() {
               <ImageIcon aria-hidden="true" />
               Open style guide
             </button>
+          </section>
 
+          <section className="work-card generate-card" aria-labelledby="generate-title">
+            <div className="section-heading">
+              <span className="step-badge">Step 3</span>
+              <div>
+                <h2 id="generate-title">Generate</h2>
+                <p>Most image generations take about three minutes.</p>
+              </div>
+            </div>
             <label className="phi-box">
               <input
                 type="checkbox"
@@ -267,16 +270,6 @@ function App() {
               />
               <span>I confirm this content does not contain protected health information (PHI).</span>
             </label>
-          </aside>
-
-          <section className="work-card generate-card" aria-labelledby="generate-title">
-            <div className="section-heading">
-              <span className="step-badge">Step 2</span>
-              <div>
-                <h2 id="generate-title">Generate</h2>
-                <p>Most image generations take about three minutes.</p>
-              </div>
-            </div>
             <button className="primary-button" type="submit" disabled={!canGenerate}>
               {isGenerating ? (
                 <>
@@ -299,7 +292,7 @@ function App() {
             <div>
               <h2>Generating your infographic</h2>
               <p>
-                Cleaning source text, planning the visual structure, and rendering through Azure.
+                Cleaning source text, planning the visual structure, and rendering the draft.
                 Elapsed time: {elapsedLabel(elapsed)} / 03:00 target.
               </p>
             </div>
