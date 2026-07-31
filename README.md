@@ -127,7 +127,27 @@ AZURE_OPENAI_VISION_DEPLOYMENT=gpt-4o
 ```
 > Note: the app is locked to Azure API version `2024-02-01` internally for compatibility.
 
-### 4. Run
+### 4. Run the React/FastAPI production UI
+
+Install frontend dependencies and build the React app:
+
+```bash
+npm install
+npm run build
+```
+
+Run the FastAPI backend, which serves both `/api/*` and the built React frontend:
+
+```bash
+uvicorn backend.main:app --host 0.0.0.0 --port 8501
+```
+
+Open [http://localhost:8501](http://localhost:8501)
+
+The React production UI exposes only audience, style, optional context, document upload,
+PHI confirmation, and generation. Azure credentials remain server-side.
+
+### 5. Legacy Streamlit UI
 
 ```bash
 streamlit run infographic_app.py --server.port 8502
@@ -140,15 +160,21 @@ Open [http://localhost:8502](http://localhost:8502)
 ## Architecture
 
 ```
-infographic_app.py           ← Streamlit entrypoint
-uab_app/ui.py                ← UI flow (basic/advanced, step navigation, style guide modal)
-uab_app/styles.py            ← 11 curated visual styles
-uab_app/prompts.py           ← prompt builder + hard constraints
-uab_app/cleanup.py           ← LLM document cleanup + source profile inference
-uab_app/image_service.py     ← model calls, retry logic, logo compositing
-uab_app/charts.py            ← chart extraction/QA/fidelity helpers
-uab_app/parsers.py           ← PDF/DOCX/TXT parsing
-generate_style_examples.py   ← batch style example generation script
+backend/main.py                    ← FastAPI app serving API + React build
+frontend/src/main.tsx              ← React production UI
+frontend/src/tokens.css            ← UAB Medicine design system tokens
+frontend/src/styles.css            ← institutional shell and product UI
+uab_app/generation_pipeline.py     ← React API generation orchestration
+infographic_app.py                 ← legacy Streamlit entrypoint
+uab_app/ui.py                      ← legacy Streamlit UI flow
+uab_app/styles.py                  ← curated visual styles
+uab_app/prompts.py                 ← prompt builder + hard constraints
+uab_app/cleanup.py                 ← LLM document cleanup + source profile inference
+uab_app/planning.py                ← structured planning pipeline
+uab_app/image_service.py           ← model calls, retry logic, logo compositing
+uab_app/charts.py                  ← chart extraction/QA/fidelity helpers
+uab_app/parsers.py                 ← PDF/DOCX/TXT parsing
+generate_style_examples.py         ← batch style example generation script
 ```
 
 ---

@@ -1,12 +1,17 @@
+FROM node:23-slim AS frontend-build
+
+WORKDIR /app
+COPY package.json package-lock.json* tsconfig.json tsconfig.app.json vite.config.ts ./
+COPY frontend ./frontend
+RUN npm install && npm run build
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
-    STREAMLIT_SERVER_PORT=8501 \
-    STREAMLIT_SERVER_HEADLESS=true \
-    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+    UVICORN_HOST=0.0.0.0 \
+    UVICORN_PORT=8501
 
 WORKDIR /app
 
@@ -19,10 +24,11 @@ RUN pip install --upgrade pip \
     && pip install -r requirements.txt
 
 COPY . .
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 EXPOSE 8501
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8501/_stcore/health || exit 1
+    CMD curl -f http://localhost:8501/api/health || exit 1
 
-CMD ["streamlit", "run", "infographic_app.py"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8501", "--proxy-headers"]

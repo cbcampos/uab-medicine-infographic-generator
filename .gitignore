@@ -8,3 +8,6 @@ __pycache__/
 streamlit.log
 assets/style_test_runs/
 assets/audience_examples/
+node_modules/
+frontend/dist/
+*.tsbuildinfo
