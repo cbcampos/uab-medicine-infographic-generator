@@ -43,6 +43,18 @@ type GenerateResponse = {
   citation: string;
 };
 
+type GenerateJobStartResponse = {
+  jobId: string;
+  status: string;
+};
+
+type GenerateJobStatusResponse = {
+  jobId: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  result?: GenerateResponse | null;
+  error?: string | null;
+};
+
 const initialConfig: AppConfig = {
   audiences: [],
   styles: [],
@@ -55,6 +67,24 @@ function elapsedLabel(seconds: number): string {
   const mm = Math.floor(seconds / 60).toString().padStart(2, "0");
   const ss = Math.floor(seconds % 60).toString().padStart(2, "0");
   return `${mm}:${ss}`;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const contentType = response.headers.get("content-type") || "";
+  const body = await response.text();
+  if (!contentType.includes("application/json")) {
+    const summary = body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    throw new Error(summary || `Server returned ${response.status} ${response.statusText}.`);
+  }
+  const payload = JSON.parse(body) as T & { detail?: string };
+  if (!response.ok) {
+    throw new Error(payload.detail || `Server returned ${response.status} ${response.statusText}.`);
+  }
+  return payload as T;
 }
 
 function App() {
@@ -117,12 +147,24 @@ function App() {
     files.forEach((file) => form.append("files", file, file.name));
 
     try {
-      const response = await fetch("/api/generate", { method: "POST", body: form });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload?.detail || "Generation failed.");
+      const startResponse = await fetch("/api/generate-jobs", { method: "POST", body: form });
+      const started = await readJsonResponse<GenerateJobStartResponse>(startResponse);
+      const pollStartedAt = Date.now();
+
+      while (Date.now() - pollStartedAt < 15 * 60 * 1000) {
+        await wait(5000);
+        const statusResponse = await fetch(`/api/generate-jobs/${started.jobId}`);
+        const status = await readJsonResponse<GenerateJobStatusResponse>(statusResponse);
+
+        if (status.status === "succeeded" && status.result) {
+          setResult(status.result);
+          return;
+        }
+        if (status.status === "failed") {
+          throw new Error(status.error || "Generation failed.");
+        }
       }
-      setResult(payload as GenerateResponse);
+      throw new Error("Generation is taking longer than expected. Please try again.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Generation failed.");
     } finally {
