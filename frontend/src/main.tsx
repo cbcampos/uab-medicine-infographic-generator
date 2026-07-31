@@ -127,6 +127,7 @@ function App() {
   const [isRevising, setIsRevising] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [pins, setPins] = useState<EditPin[]>([]);
+  const [activePinId, setActivePinId] = useState<number | null>(null);
   const [nextPinId, setNextPinId] = useState(1);
   const [editMode, setEditMode] = useState<EditMode>("pin");
   const [brushSize, setBrushSize] = useState(56);
@@ -195,6 +196,7 @@ function App() {
     setError("");
     setResult(null);
     setPins([]);
+    setActivePinId(null);
     clearPaintMask(false);
     setIsGenerating(true);
 
@@ -254,6 +256,7 @@ function App() {
       const started = await readJsonResponse<GenerateJobStartResponse>(startResponse);
       setResult(await pollJob(started.jobId));
       setPins([]);
+      setActivePinId(null);
       clearPaintMask(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Revision failed.");
@@ -273,6 +276,7 @@ function App() {
     const yPercent = Math.min(100, Math.max(0, ((event.clientY - rect.top) / rect.height) * 100));
     const id = nextPinId;
     setPins((current) => [...current, { id, xPercent, yPercent, comment: "" }]);
+    setActivePinId(id);
     setNextPinId((value) => value + 1);
   }
 
@@ -280,6 +284,7 @@ function App() {
     if (!result || isWorking) return;
     const id = nextPinId;
     setPins((current) => [...current, { id, xPercent: 50, yPercent: 50, comment: "" }]);
+    setActivePinId(id);
     setNextPinId((value) => value + 1);
   }
 
@@ -289,12 +294,16 @@ function App() {
 
   function removePin(id: number) {
     setPins((current) => current.filter((pin) => pin.id !== id));
+    if (activePinId === id) {
+      setActivePinId(null);
+    }
   }
 
   function addQuickEdit(text: string) {
     if (!pins.length) return;
     const lastPin = pins[pins.length - 1];
     updatePinComment(lastPin.id, text);
+    setActivePinId(lastPin.id);
   }
 
   function syncPaintCanvas(event: React.SyntheticEvent<HTMLImageElement>) {
@@ -435,6 +444,12 @@ function App() {
   function startAnotherEditPin() {
     if (!result || isWorking) return;
     setEditMode("pin");
+  }
+
+  function pinCommentClass(pin: EditPin): string {
+    const horizontal = pin.xPercent > 64 ? "left" : "right";
+    const vertical = pin.yPercent > 76 ? "above" : "below";
+    return `pin-comment pin-comment-${horizontal} pin-comment-${vertical}`;
   }
 
   function getPaintMaskBase64(): string {
@@ -766,21 +781,49 @@ function App() {
                   />
                 ) : null}
                 {pins.map((pin, index) => (
-                  <button
-                    type="button"
+                  <div
                     key={pin.id}
-                    className="edit-pin"
+                    className={pinCommentClass(pin)}
                     style={{ left: `${pin.xPercent}%`, top: `${pin.yPercent}%` }}
                     onClick={(event) => event.stopPropagation()}
-                    aria-label={`Edit pin ${index + 1}`}
+                    onKeyDown={(event) => event.stopPropagation()}
                   >
-                    {index + 1}
-                  </button>
+                    <button
+                      type="button"
+                      className={`edit-pin ${activePinId === pin.id ? "active" : ""}`}
+                      onClick={() => setActivePinId(pin.id)}
+                      aria-label={`Edit pin ${index + 1}`}
+                    >
+                      {index + 1}
+                    </button>
+                    {activePinId === pin.id || !pin.comment.trim() ? (
+                      <div className="inline-pin-editor">
+                        <textarea
+                          value={pin.comment}
+                          onChange={(event) => updatePinComment(pin.id, event.target.value)}
+                          onFocus={() => setActivePinId(pin.id)}
+                          placeholder="Describe this edit."
+                          disabled={isWorking}
+                          rows={3}
+                          autoFocus={!pin.comment.trim()}
+                        />
+                        <div className="inline-pin-actions">
+                          <button type="button" className="secondary-button" onClick={() => setActivePinId(null)} disabled={!pin.comment.trim()}>
+                            Done
+                          </button>
+                          <button type="button" className="icon-button" onClick={() => removePin(pin.id)} disabled={isWorking} aria-label={`Remove pin ${index + 1}`}>
+                            <Trash2 aria-hidden="true" />
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                 ))}
               </div>
 
               {pins.length ? (
                 <div className="pin-list">
+                  <p className="pin-list-note">Edit comments can be typed on the image. This list is here for quick review.</p>
                   {pins.map((pin, index) => (
                     <label className="pin-row" key={pin.id}>
                       <span>{index + 1}</span>

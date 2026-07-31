@@ -670,9 +670,32 @@ fieldset {
   transform: translate(-50%, -50%);
 }
 
-.edit-pin {
+.pin-comment {
   position: absolute;
   z-index: 4;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: min(360px, 44vw);
+  transform: translate(-17px, -17px);
+}
+
+.pin-comment-left {
+  flex-direction: row-reverse;
+  transform: translate(calc(-100% + 17px), -17px);
+}
+
+.pin-comment-above {
+  align-items: flex-end;
+  transform: translate(-17px, calc(-100% + 17px));
+}
+
+.pin-comment-left.pin-comment-above {
+  transform: translate(calc(-100% + 17px), calc(-100% + 17px));
+}
+
+.edit-pin {
+  flex: 0 0 auto;
   width: 34px;
   height: 34px;
   min-height: 34px;
@@ -685,12 +708,56 @@ fieldset {
   cursor: default;
   font-size: 14px;
   font-weight: 800;
-  transform: translate(-50%, -50%);
+}
+
+.edit-pin.active {
+  background: var(--color-brand-green);
+  box-shadow: 0 0 0 3px rgba(255, 197, 41, 0.8), 0 4px 14px rgba(0, 0, 0, 0.28);
+}
+
+.inline-pin-editor {
+  width: min(300px, 36vw);
+  padding: 10px;
+  border: 1px solid rgba(0, 74, 40, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
+}
+
+.inline-pin-editor textarea {
+  width: 100%;
+  min-height: 78px;
+  resize: vertical;
+  border: 1px solid var(--color-border-cool);
+  border-radius: 6px;
+  padding: 8px;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.inline-pin-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.inline-pin-actions .secondary-button,
+.inline-pin-actions .icon-button {
+  min-height: 34px;
 }
 
 .pin-list {
   display: grid;
   gap: 10px;
+}
+
+.pin-list-note {
+  margin: 0;
+  color: var(--color-muted-ink);
+  font-size: 13px;
 }
 
 .pin-row {
