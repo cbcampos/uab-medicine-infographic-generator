@@ -106,9 +106,14 @@ async def generate(
 
 
 def _react_file_response(path: str) -> FileResponse:
-    target = DIST_DIR / path
-    if path and target.is_file():
+    target = (DIST_DIR / path).resolve()
+    if path and DIST_DIR.resolve() in target.parents and target.is_file():
         return FileResponse(target)
+
+    requested = Path(path)
+    if path.startswith("api/") or requested.name.startswith(".") or requested.suffix:
+        raise HTTPException(status_code=404, detail="Not found.")
+
     index = DIST_DIR / "index.html"
     if not index.is_file():
         raise HTTPException(status_code=404, detail="Frontend has not been built.")
