@@ -267,15 +267,23 @@ async def start_revision_job(
     paintMaskBase64: Annotated[str, Form()] = "",
     currentTopic: Annotated[str, Form()] = "",
     currentCitation: Annotated[str, Form()] = "",
+    currentImage: Annotated[UploadFile | None, File()] = None,
+    paintMask: Annotated[UploadFile | None, File()] = None,
     files: Annotated[list[UploadFile], File()] = [],
 ) -> GenerateJobStartResponse:
     if not phiConfirmed:
         raise HTTPException(status_code=400, detail="Confirm that the content does not contain PHI.")
 
-    try:
-        current_image_bytes = base64.b64decode(imageBase64, validate=True)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="The image to edit was not valid.") from exc
+    if currentImage is not None:
+        current_image_bytes = await currentImage.read()
+    else:
+        try:
+            current_image_bytes = base64.b64decode(imageBase64, validate=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="The image to edit was not valid.") from exc
+
+    if not current_image_bytes:
+        raise HTTPException(status_code=400, detail="The image to edit was not valid.")
 
     try:
         parsed_pins = json.loads(pinsJson)
@@ -286,7 +294,9 @@ async def start_revision_job(
     pins = [EditPin.model_validate(pin).model_dump() for pin in parsed_pins]
 
     paint_mask_bytes = None
-    if paintMaskBase64.strip():
+    if paintMask is not None:
+        paint_mask_bytes = await paintMask.read()
+    elif paintMaskBase64.strip():
         try:
             paint_mask_bytes = base64.b64decode(paintMaskBase64, validate=True)
         except Exception as exc:

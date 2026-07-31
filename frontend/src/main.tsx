@@ -91,6 +91,15 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function base64ToBlob(base64: string, contentType: string): Blob {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type: contentType });
+}
+
 async function readJsonResponse<T>(response: Response): Promise<T> {
   const contentType = response.headers.get("content-type") || "";
   const body = await response.text();
@@ -218,12 +227,12 @@ function App() {
     form.append("style", style);
     form.append("context", context);
     form.append("phiConfirmed", String(phiConfirmed));
-    form.append("imageBase64", result.imageBase64);
+    form.append("currentImage", base64ToBlob(result.imageBase64, "image/png"), "current-infographic.png");
     form.append("currentTopic", result.topic);
     form.append("currentCitation", result.citation);
     const paintMaskBase64 = getPaintMaskBase64();
     if (paintMaskBase64) {
-      form.append("paintMaskBase64", paintMaskBase64);
+      form.append("paintMask", base64ToBlob(paintMaskBase64, "image/png"), "paint-mask.png");
     }
     form.append(
       "pinsJson",
